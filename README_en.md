@@ -7,9 +7,11 @@ MRI image viewing and processing tool based on Qt and Python, supporting 2D/3D i
 ## Features
 
 ### Core Features
-- Intelligent data detection: automatically identifies 2D/3D, manually identifies image/k-space data types
-- k-space conversion: supports 2D slice-by-slice IFFT and 3D full IFFT conversion
-- Multi-format support: reads .npy files, saves as .jpg/.png format
+- Intelligent data detection: automatically identifies 2D/3D, user-selectable image/k-space data types
+- **Acquisition mode selection**: Supports 2D acquisition (slice-by-slice 2D IFFT) and 3D acquisition (volume 3D IFFT), defaults to 2D acquisition
+- **3D data interpretation**: When data has 3 dimensions, user can choose to interpret as (Coil,H,W) or (Slice,H,W)
+- k-space conversion: automatically selects 2D/3D IFFT based on acquisition mode
+- Multi-format support: reads .npy and .mat files, saves as .jpg/.png format
 - Multi-view display: 3D data supports Axial, Sagittal, and Coronal views
 - RSS coil combination: automatically combines multi-channel data using Root Sum of Squares
 
@@ -91,8 +93,13 @@ This will generate test files in the `test_data/` directory, including 2D/3D ima
 
 ### Open File
 1. Click menu `File` -> `Open` or press `Ctrl+O`
-2. Select `.npy` MRI data file
-3. Program automatically detects data type and displays
+2. Select `.npy` or `.mat` MRI data file
+3. In the dialog that appears, select:
+   - **Data Type**: K-Space (frequency domain) or Image (image data)
+   - **Acquisition Mode** (K-Space only): 2D Acquisition (slice-by-slice 2D IFFT, default) or 3D Acquisition (volume 3D IFFT)
+   - **3D Data Interpretation** (when data has 3 dimensions): (Coil,H,W) first dimension is coil channels (default), or (Slice,H,W) first dimension is slices
+4. If .mat file, also select the data key
+5. Program processes and displays based on your selection
 
 ### Save Image
 1. Click menu `File` -> `Save as JPG` or press `Ctrl+S`
@@ -159,24 +166,30 @@ Supports the following file formats:
 - **NumPy (.npy)**: Direct reading of .npy files
 - **MAT (.mat)**: Reading MATLAB .mat files with multi-key selection
 
-Program automatically detects following data shapes:
-
-1. 2D image: (height, width) or (slices, height, width)
-2. 3D image: (channels, slices, height, width)
-3. 2D k-space: (phase, freq) (complex data)
-4. 3D k-space: (channels, slices, phase, freq) (complex data)
-
 ### Loading Process
 
 1. Select .npy or .mat file
 2. Select data type: K-Space (frequency domain) / Image (image data)
-3. If .mat file, select data key
-4. Auto-process and display
+3. Select acquisition mode (K-Space only):
+   - **2D Acquisition**: Slice-by-slice independent acquisition, 2D IFFT per slice (default)
+   - **3D Acquisition**: Volume acquisition, 3D IFFT across all spatial dimensions
+4. Select 3D data interpretation (when raw data has 3 dimensions):
+   - **(Coil, H, W)**: First dimension is coil channels (default)
+   - **(Slice, H, W)**: First dimension is slice count
+5. If .mat file, select data key
+6. Process and display
 
 ### K-Space Conversion
 
-- 2D mode: slice-by-slice 2D IFFT
-- 3D mode: IFFT on phase and frequency dimensions (ortho normalization)
+| Acquisition Mode | Data Shape | IFFT Method |
+|-----------------|-----------|-------------|
+| 2D Acquisition | (Coil/Slice, Phase, Freq) | **2D IFFT**(Phase, Freq) for each (coil, slice) |
+| 2D Acquisition | (Coil, Slice, Phase, Freq) | **2D IFFT**(Phase, Freq) for each (coil, slice) |
+| 3D Acquisition | (Coil, Slice, Phase, Freq) | **3D IFFT**(Slice, Phase, Freq) for each coil |
+
+**Key Difference**:
+- **2D Acquisition**: Each slice is independently excited, k-space has no encoding in slice direction, slice dimension does not participate in IFFT
+- **3D Acquisition**: Slice direction also has phase encoding, FFT is needed in that direction too
 
 ## Tech Stack
 

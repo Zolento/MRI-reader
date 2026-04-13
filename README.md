@@ -7,9 +7,11 @@
 ## 功能特性
 
 ### 核心功能
-- 智能数据检测：自动识别2D/3D，可选图像/k-space数据类型
-- k-space转换：支持2D逐切片IFFT和3D完整IFFT转换
-- 多格式支持：读取.npy文件，保存为.jpg/.png格式
+- 智能数据检测：自动识别2D/3D，用户可选图像/k-space数据类型
+- **采集方式选择**：支持2D采集（逐层2D IFFT）和3D采集（体积3D IFFT），默认2D采集
+- **三维数据解释**：当数据有3个维度时，用户可选择解释为(Coil,H,W)或(Slice,H,W)
+- k-space转换：根据采集方式自动选择2D/3D IFFT
+- 多格式支持：读取.npy和.mat文件，保存为.jpg/.png格式
 - 多视角显示：3D数据支持横截面(Axial)、矢状面(Sagittal)、冠状面(Coronal)
 - RSS通道合并：多通道数据自动使用Root Sum of Squares方法合并
 
@@ -91,8 +93,13 @@ uv run python generate_test_data.py
 
 ### 打开文件
 1. 点击菜单栏 `文件` -> `打开` 或按 `Ctrl+O`
-2. 选择 `.npy` 格式的MRI数据文件
-3. 程序自动检测数据类型并显示
+2. 选择 `.npy` 或 `.mat` 格式的MRI数据文件
+3. 在弹出的对话框中选择：
+   - **数据类型**：K-Space (频域数据) 或 Image (图像数据)
+   - **采集方式**（仅K-Space）：2D 采集（逐层2D IFFT，默认）或 3D 采集（体积3D IFFT）
+   - **三维数据解释**（当数据有3个维度时）：(Coil,H,W) 第一维是线圈通道（默认），或 (Slice,H,W) 第一维是切片数
+4. 如果是 .mat 文件，还需选择数据键 (key)
+5. 程序根据选择处理并显示数据
 
 ### 保存图像
 1. 点击菜单栏 `文件` -> `保存为JPG` 或按 `Ctrl+S`
@@ -159,24 +166,30 @@ mri-reader/
 - **NumPy (.npy)**: 直接读取.npy文件
 - **MAT (.mat)**: 读取MATLAB .mat文件，支持多数据键(key)选择
 
-程序自动检测以下数据形状：
-
-1. 2D图像：(height, width) 或 (slices, height, width)
-2. 3D图像：(channels, slices, height, width)
-3. 2D k-space：(phase, freq) (复数数据)
-4. 3D k-space：(channels, slices, phase, freq) (复数数据)
-
 ### 加载流程
 
 1. 选择 .npy 或 .mat 文件
 2. 选择数据类型：K-Space (频域) / Image (图像)
-3. 如果是 .mat 文件，选择数据键 (key)
-4. 自动处理并显示
+3. 选择采集方式（仅K-Space）：
+   - **2D 采集**：逐层独立采集，对每个切片做 2D IFFT（默认）
+   - **3D 采集**：体积采集，对所有空间维度做 3D IFFT
+4. 选择三维数据解释（当原始数据有3个维度时）：
+   - **(Coil, H, W)**：第一维是线圈通道数（默认）
+   - **(Slice, H, W)**：第一维是切片数
+5. 如果是 .mat 文件，选择数据键 (key)
+6. 处理并显示
 
 ### K-Space 转换
 
-- 2D模式：逐切片执行 2D IFFT
-- 3D模式：在相位和频率维度执行 IFFT（正交归一化）
+| 采集方式 | 数据形状 | IFFT 方式 |
+|---------|---------|----------|
+| 2D 采集 | (Coil/Slice, Phase, Freq) | 对每个 (coil, slice) 独立做 **2D IFFT**(Phase, Freq) |
+| 2D 采集 | (Coil, Slice, Phase, Freq) | 对每个 (coil, slice) 独立做 **2D IFFT**(Phase, Freq) |
+| 3D 采集 | (Coil, Slice, Phase, Freq) | 对每个 coil 做 **3D IFFT**(Slice, Phase, Freq) |
+
+**关键区别**：
+- **2D 采集**：每个 slice 是独立激励的，k-space 在 slice 方向没有编码，slice 维度不参与 IFFT
+- **3D 采集**：slice 方向也有相位编码，需要在该方向也做 FFT
 
 ## 技术栈
 
