@@ -1,6 +1,6 @@
 """
 MRI Data Model - Handles loading and interpreting MRI data
-Automatically detects data type (image/k-space) and dimensionality (2D/3D)
+Detects data type (image/k-space) and dimensionality (2D/3D) with user guidance
 """
 
 import numpy as np
@@ -22,16 +22,27 @@ class DataDimension(Enum):
 
 class MRIData:
     """
-    MRI data container with automatic shape and type detection
-    
+    MRI data container with user-guided shape and type detection
+
     Expected shapes:
-    - 3D k-space: (channels, slices, phase, freq)
+    - 3D k-space (3D acquisition): (channels, slices, phase, freq)
+    - 3D k-space (2D acquisition): (channels/slices, phase, freq) - IFFT per slice
     - 3D image: (channels, slices, height, width) or (slices, height, width)
     - 2D k-space: (phase, freq) or (1, phase, freq)
     - 2D image: (height, width) or (1, height, width)
+
+    Args:
+        file_path: Path to .npy file
+        preloaded_data: Pre-loaded numpy array (e.g. from .mat file)
+        acquisition_mode: "2d" for slice-by-slice acquisition (default),
+                          "3d" for volume acquisition
+        dim3_interpretation: For 3D raw data (X, H, W), how to interpret:
+                             "coil_hw" = (Coil, H, W) - default
+                             "slice_hw" = (Slice, H, W)
     """
-    
-    def __init__(self, file_path: str, preloaded_data: Optional[np.ndarray] = None):
+
+    def __init__(self, file_path: str, preloaded_data: Optional[np.ndarray] = None,
+                 acquisition_mode: str = "2d", dim3_interpretation: str = "coil_hw"):
         self.file_path = file_path
         self.raw_data: Optional[np.ndarray] = None
         self.data_type: Optional[DataType] = None
@@ -41,6 +52,10 @@ class MRIData:
         self.num_channels: int = 1
         self.height: int = 0
         self.width: int = 0
+
+        # User-provided hints for data interpretation
+        self.acquisition_mode = acquisition_mode  # "2d" or "3d"
+        self.dim3_interpretation = dim3_interpretation  # "coil_hw" or "slice_hw"
 
         # Load and analyze data
         if preloaded_data is not None:
@@ -72,11 +87,11 @@ class MRIData:
         """Analyze data shape and determine type and dimensionality"""
         shape = self.raw_data.shape
         ndim = len(shape)
-        
+
         # Heuristic to determine if data is k-space or image
         # k-space typically has complex values or specific magnitude characteristics
         self.data_type = self._detect_data_type()
-        
+
         # Normalize shape to 4D: (channels, slices, height, width)
         if ndim == 2:
             # (height, width) - single channel, single slice
@@ -86,32 +101,32 @@ class MRIData:
             self.height = shape[0]
             self.width = shape[1]
             self.processed_data = self.raw_data.reshape(1, 1, shape[0], shape[1])
-            
+
         elif ndim == 3:
             # Could be (slices, height, width) or (channels, height, width)
-            # Heuristic: if first dim is small (<8), treat as channels
-            if shape[0] <= 8:
-                # Likely (channels, height, width)
-                self.dimension = DataDimension.DIM_2D
-                self.num_channels = shape[0]
-                self.num_slices = 1
-                self.height = shape[1]
-                self.width = shape[2]
-                self.processed_data = self.raw_data.reshape(shape[0], 1, shape[1], shape[2])
-            else:
-                # Likely (slices, height, width)
+            # Use user-provided dim3_interpretation instead of heuristics
+            if self.dim3_interpretation == "slice_hw":
+                # User says: (slices, height, width)
                 self.dimension = DataDimension.DIM_3D
                 self.num_channels = 1
                 self.num_slices = shape[0]
                 self.height = shape[1]
                 self.width = shape[2]
                 self.processed_data = self.raw_data.reshape(1, shape[0], shape[1], shape[2])
-                
+            else:
+                # Default: (channels, height, width)
+                self.dimension = DataDimension.DIM_2D
+                self.num_channels = shape[0]
+                self.num_slices = 1
+                self.height = shape[1]
+                self.width = shape[2]
+                self.processed_data = self.raw_data.reshape(shape[0], 1, shape[1], shape[2])
+
         elif ndim == 4:
             # (channels, slices, height, width)
             # Use heuristics to identify dimension roles
             self.dimension = DataDimension.DIM_3D
-            
+
             # Try to identify which dimension is channels
             # Channels are typically small (<16)
             if shape[0] <= 16:

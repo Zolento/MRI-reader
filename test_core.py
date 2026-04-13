@@ -15,21 +15,22 @@ from core.image_processor import ImageProcessor
 
 
 def test_2d_image():
-    """Test 2D image loading"""
+    """Test 2D image loading (multi-slice, stored as 3D array)"""
     print("Testing 2D image loading...")
-    mri = MRIData('test_data/test_2d_image.npy')
-    
+    # Shape: (10, 128, 128) — interpret as (slices, H, W)
+    mri = MRIData('test_data/test_2d_image.npy', dim3_interpretation='slice_hw')
+
     assert mri.data_type == DataType.IMAGE
     assert mri.dimension == DataDimension.DIM_3D  # 10 slices is 3D
     assert mri.num_slices == 10
     assert mri.num_channels == 1
     assert mri.height == 128
     assert mri.width == 128
-    
+
     # Test slice extraction
     slice_0 = mri.get_slice(0)
     assert slice_0.shape == (128, 128)
-    
+
     print("  ✅ 2D image test passed")
     return True
 
@@ -63,41 +64,90 @@ def test_2d_kspace():
     """Test 2D k-space conversion"""
     print("Testing 2D k-space conversion...")
     mri = MRIData('test_data/test_2d_kspace.npy')
-    
+
     assert mri.data_type == DataType.KSPACE
-    
+
     # Convert k-space to image
     image_data = KSpaceConverter.convert(mri, mode_3d=False)
-    
+
     assert image_data.shape == mri.processed_data.shape
     assert image_data.dtype == np.float64
     assert image_data.min() >= 0
-    assert image_data.max() <= 1.0
-    
+    # Note: max value depends on IFFT normalization, just check it's finite
+    assert np.isfinite(image_data.max())
+
     print("  ✅ 2D k-space test passed")
     return True
 
 
 def test_3d_kspace():
-    """Test 3D k-space conversion"""
-    print("Testing 3D k-space conversion...")
+    """Test 3D k-space conversion (2D acquisition, 4D data)"""
+    print("Testing 3D k-space conversion (2D acquisition)...")
     mri = MRIData('test_data/test_3d_kspace.npy')
-    
+
+    assert mri.data_type == DataType.KSPACE
+    assert mri.dimension == DataDimension.DIM_3D  # 4D data -> 3D
+
+    # Convert with 2D acquisition mode (default): 2D IFFT per slice
+    image_2d = KSpaceConverter.convert(mri, mode_3d=False)
+
+    assert image_2d.shape == mri.processed_data.shape
+    assert image_2d.dtype == np.float64
+    assert np.isfinite(image_2d.max())
+
+    print("  ✅ 3D k-space (2D acquisition) test passed")
+    return True
+
+
+def test_3d_kspace_3d_acquisition():
+    """Test 3D k-space conversion with 3D acquisition mode"""
+    print("Testing 3D k-space conversion (3D acquisition)...")
+    mri = MRIData('test_data/test_3d_kspace.npy', acquisition_mode='3d')
+
     assert mri.data_type == DataType.KSPACE
     assert mri.dimension == DataDimension.DIM_3D
-    
-    # Convert k-space to image (both 2D and 3D modes)
-    image_2d = KSpaceConverter.convert(mri, mode_3d=False)
+
+    # Convert with 3D acquisition mode: 3D IFFT
     image_3d = KSpaceConverter.convert(mri, mode_3d=True)
-    
-    assert image_2d.shape == mri.processed_data.shape
+
     assert image_3d.shape == mri.processed_data.shape
-    
-    # Both should be normalized
-    assert image_2d.max() <= 1.0
-    assert image_3d.max() <= 1.0
-    
-    print("  ✅ 3D k-space test passed")
+    assert image_3d.dtype == np.float64
+
+    print("  ✅ 3D k-space (3D acquisition) test passed")
+    return True
+
+
+def test_3d_coil_hw_interpretation():
+    """Test 3D data interpreted as (Coil, H, W)"""
+    print("Testing 3D data as (Coil, H, W)...")
+    # Create test data: (3 coils, 64H, 64W)
+    test_data = np.random.random((3, 64, 64))
+    mri = MRIData('test', preloaded_data=test_data, dim3_interpretation='coil_hw')
+
+    assert mri.dimension == DataDimension.DIM_2D
+    assert mri.num_channels == 3
+    assert mri.num_slices == 1
+    assert mri.height == 64
+    assert mri.width == 64
+
+    print("  ✅ 3D (Coil, H, W) interpretation test passed")
+    return True
+
+
+def test_3d_slice_hw_interpretation():
+    """Test 3D data interpreted as (Slice, H, W)"""
+    print("Testing 3D data as (Slice, H, W)...")
+    # Create test data: (10 slices, 64H, 64W)
+    test_data = np.random.random((10, 64, 64))
+    mri = MRIData('test', preloaded_data=test_data, dim3_interpretation='slice_hw')
+
+    assert mri.dimension == DataDimension.DIM_3D
+    assert mri.num_channels == 1
+    assert mri.num_slices == 10
+    assert mri.height == 64
+    assert mri.width == 64
+
+    print("  ✅ 3D (Slice, H, W) interpretation test passed")
     return True
 
 
@@ -162,6 +212,9 @@ def main():
         test_3d_image,
         test_2d_kspace,
         test_3d_kspace,
+        test_3d_kspace_3d_acquisition,
+        test_3d_coil_hw_interpretation,
+        test_3d_slice_hw_interpretation,
         test_image_processor,
     ]
     

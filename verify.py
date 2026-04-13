@@ -29,15 +29,15 @@ except Exception as e:
 print("\n2. Testing data loading...")
 try:
     test_files = [
-        'test_data/test_2d_image.npy',
-        'test_data/test_3d_image.npy',
-        'test_data/test_2d_kspace.npy',
-        'test_data/test_3d_kspace.npy',
+        ('test_data/test_2d_image.npy', {'dim3_interpretation': 'slice_hw'}),
+        ('test_data/test_3d_image.npy', {}),
+        ('test_data/test_2d_kspace.npy', {}),
+        ('test_data/test_3d_kspace.npy', {}),
     ]
-    
-    for test_file in test_files:
+
+    for test_file, kwargs in test_files:
         if os.path.exists(test_file):
-            mri = MRIData(test_file)
+            mri = MRIData(test_file, **kwargs)
             print(f"   ✅ {test_file}: {mri.dimension.value}, {mri.data_type.value}, {mri.num_slices} slices")
         else:
             print(f"   ⚠️  {test_file}: Not found (run generate_test_data.py)")
@@ -53,10 +53,14 @@ try:
     mri_2d = MRIData('test_data/test_2d_kspace.npy')
     image_2d = KSpaceConverter.convert(mri_2d, mode_3d=False)
     print(f"   ✅ 2D k-space converted: {image_2d.shape}")
-    
+
     mri_3d = MRIData('test_data/test_3d_kspace.npy')
-    image_3d = KSpaceConverter.convert(mri_3d, mode_3d=True)
-    print(f"   ✅ 3D k-space converted: {image_3d.shape}")
+    image_3d_2d_acq = KSpaceConverter.convert(mri_3d, mode_3d=False)
+    print(f"   ✅ 3D k-space (2D acquisition) converted: {image_3d_2d_acq.shape}")
+
+    mri_3d_3d = MRIData('test_data/test_3d_kspace.npy', acquisition_mode='3d')
+    image_3d_3d_acq = KSpaceConverter.convert(mri_3d_3d, mode_3d=True)
+    print(f"   ✅ 3D k-space (3D acquisition) converted: {image_3d_3d_acq.shape}")
 except Exception as e:
     print(f"   ❌ Conversion failed: {e}")
     import traceback
@@ -105,8 +109,30 @@ except Exception as e:
     traceback.print_exc()
     sys.exit(1)
 
-# Test 6: PyQt5 availability
-print("\n6. Testing PyQt5 availability...")
+# Test 6: 3D data interpretation
+print("\n6. Testing 3D data interpretation...")
+try:
+    # (Coil, H, W) interpretation
+    coil_data = np.random.random((3, 64, 64))
+    mri_coil = MRIData('test', preloaded_data=coil_data, dim3_interpretation='coil_hw')
+    assert mri_coil.dimension == DataDimension.DIM_2D
+    assert mri_coil.num_channels == 3
+    print(f"   ✅ (Coil, H, W): {mri_coil.num_channels} channels, 2D")
+
+    # (Slice, H, W) interpretation
+    slice_data = np.random.random((10, 64, 64))
+    mri_slice = MRIData('test', preloaded_data=slice_data, dim3_interpretation='slice_hw')
+    assert mri_slice.dimension == DataDimension.DIM_3D
+    assert mri_slice.num_slices == 10
+    print(f"   ✅ (Slice, H, W): {mri_slice.num_slices} slices, 3D")
+except Exception as e:
+    print(f"   ❌ 3D interpretation failed: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
+# Test 7: PyQt5 availability
+print("\n7. Testing PyQt5 availability...")
 try:
     from PyQt5.QtWidgets import QApplication
     from PyQt5.QtCore import Qt

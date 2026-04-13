@@ -226,10 +226,12 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
-        # Ask user to select data type (default: k-space)
-        is_kspace = self._ask_data_type(file_path)
-        if is_kspace is None:
+        # Ask user to select data type and acquisition options
+        data_type_result = self._ask_data_type_with_options(file_path)
+        if data_type_result is None:
             return  # User cancelled
+
+        is_kspace, acquisition_mode, dim3_interpretation = data_type_result
 
         # If mat file, ask user to select key
         selected_key = None
@@ -239,7 +241,9 @@ class MainWindow(QMainWindow):
                 return  # User cancelled
 
         try:
-            self._load_file(file_path, is_kspace=is_kspace, mat_key=selected_key)
+            self._load_file(file_path, is_kspace=is_kspace, mat_key=selected_key,
+                           acquisition_mode=acquisition_mode,
+                           dim3_interpretation=dim3_interpretation)
         except Exception as e:
             QMessageBox.critical(
                 self,
@@ -247,35 +251,77 @@ class MainWindow(QMainWindow):
                 f"加载文件失败:\n{str(e)}"
             )
     
-    def _ask_data_type(self, file_path: str) -> bool:
+    def _ask_data_type_with_options(self, file_path: str):
         """
-        Ask user to select data type
-        
+        Ask user to select data type, acquisition mode, and 3D interpretation
+
         Returns:
-            True if k-space, False if image, None if cancelled
+            Tuple of (is_kspace, acquisition_mode, dim3_interpretation) or None if cancelled
         """
-        from PyQt5.QtWidgets import QDialog, QRadioButton, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
-        
+        from PyQt5.QtWidgets import (
+            QDialog, QRadioButton, QVBoxLayout, QHBoxLayout,
+            QPushButton, QLabel, QGroupBox, QButtonGroup
+        )
+
         dialog = QDialog(self)
-        dialog.setWindowTitle("选择数据类型")
-        dialog.setMinimumWidth(400)
-        
+        dialog.setWindowTitle("选择数据选项")
+        dialog.setMinimumWidth(480)
+
         layout = QVBoxLayout(dialog)
-        
+
         # File info
         filename = file_path.split('/')[-1]
         layout.addWidget(QLabel(f"文件: {filename}"))
-        layout.addWidget(QLabel("请选择数据类型:"))
-        
-        # Radio buttons
+
+        # === Group 1: Data type ===
+        type_group = QGroupBox("数据类型")
+        type_layout = QVBoxLayout(type_group)
+
         radio_kspace = QRadioButton("K-Space (频域数据)")
-        radio_kspace.setChecked(True)  # Default: k-space
-        
+        radio_kspace.setChecked(True)
         radio_image = QRadioButton("Image (图像数据)")
-        
-        layout.addWidget(radio_kspace)
-        layout.addWidget(radio_image)
-        
+
+        type_layout.addWidget(radio_kspace)
+        type_layout.addWidget(radio_image)
+        layout.addWidget(type_group)
+
+        # === Group 2: Acquisition mode (for k-space only) ===
+        acq_group = QGroupBox("采集方式")
+        acq_layout = QVBoxLayout(acq_group)
+
+        radio_2d_acq = QRadioButton("2D 采集（逐层采集，2D IFFT）")
+        radio_2d_acq.setChecked(True)
+        radio_3d_acq = QRadioButton("3D 采集（体积采集，3D IFFT）")
+
+        acq_layout.addWidget(radio_2d_acq)
+        acq_layout.addWidget(radio_3d_acq)
+        layout.addWidget(acq_group)
+
+        # === Group 3: 3D shape interpretation ===
+        dim3_group = QGroupBox("三维数据解释")
+        dim3_layout = QVBoxLayout(dim3_group)
+        dim3_desc = QLabel("当原始数据有3个维度 (X, H, W) 时:")
+        dim3_desc.setStyleSheet("color: gray; font-size: 11px;")
+        dim3_layout.addWidget(dim3_desc)
+
+        radio_coil_hw = QRadioButton("(Coil, H, W) — 第一维是线圈通道")
+        radio_coil_hw.setChecked(True)
+        radio_slice_hw = QRadioButton("(Slice, H, W) — 第一维是切片数")
+
+        dim3_layout.addWidget(radio_coil_hw)
+        dim3_layout.addWidget(radio_slice_hw)
+        layout.addWidget(dim3_group)
+
+        # Update group availability based on selection
+        def update_availability():
+            is_ks = radio_kspace.isChecked()
+            acq_group.setEnabled(is_ks)
+            # dim3 interpretation is always relevant for 3D data
+            dim3_group.setEnabled(True)
+
+        radio_kspace.toggled.connect(update_availability)
+        radio_image.toggled.connect(update_availability)
+
         # Buttons
         btn_layout = QHBoxLayout()
         btn_ok = QPushButton("确定")
@@ -283,20 +329,24 @@ class MainWindow(QMainWindow):
         btn_layout.addWidget(btn_ok)
         btn_layout.addWidget(btn_cancel)
         layout.addLayout(btn_layout)
-        
-        result = [None]  # Use list to capture in closure
-        
+
+        result = [None]
+
         def on_ok():
-            result[0] = radio_kspace.isChecked()
+            is_kspace = radio_kspace.isChecked()
+            acquisition_mode = "2d" if radio_2d_acq.isChecked() else "3d"
+            dim3_interp = "coil_hw" if radio_coil_hw.isChecked() else "slice_hw"
+            result[0] = (is_kspace, acquisition_mode, dim3_interp)
             dialog.accept()
-        
+
         def on_cancel():
             result[0] = None
             dialog.reject()
-        
+
         btn_ok.clicked.connect(on_ok)
         btn_cancel.clicked.connect(on_cancel)
-        
+        update_availability()
+
         if dialog.exec_() == QDialog.Accepted:
             return result[0]
         return None
@@ -367,19 +417,26 @@ class MainWindow(QMainWindow):
             return result[0]
         return None
     
-    def _load_file(self, file_path: str, is_kspace: bool = True, mat_key: str = None):
+    def _load_file(self, file_path: str, is_kspace: bool = True, mat_key: str = None,
+                   acquisition_mode: str = "2d", dim3_interpretation: str = "coil_hw"):
         """Load and process MRI file
-        
+
         Args:
             file_path: Path to the .npy or .mat file
             is_kspace: True if k-space data, False if image data
             mat_key: Key to use for .mat files (None for .npy)
+            acquisition_mode: "2d" for slice-by-slice, "3d" for volume acquisition
+            dim3_interpretation: "coil_hw" or "slice_hw" for 3D raw data
         """
         # Load data based on file type
         if file_path.endswith('.mat'):
-            self._load_mat_file(file_path, mat_key)
+            self._load_mat_file(file_path, mat_key,
+                               acquisition_mode=acquisition_mode,
+                               dim3_interpretation=dim3_interpretation)
         else:
-            self._load_npy_file(file_path)
+            self._load_npy_file(file_path,
+                               acquisition_mode=acquisition_mode,
+                               dim3_interpretation=dim3_interpretation)
 
         # Use user's selection instead of auto-detection
         self.is_kspace = is_kspace
@@ -416,32 +473,37 @@ class MainWindow(QMainWindow):
         self.enhancement_panel.set_params(params)
         self.enhancement_panel.blockSignals(False)
     
-    def _load_npy_file(self, file_path: str):
+    def _load_npy_file(self, file_path: str, acquisition_mode: str = "2d",
+                       dim3_interpretation: str = "coil_hw"):
         """Load .npy file"""
-        self.mri_data = MRIData(file_path)
+        self.mri_data = MRIData(file_path, acquisition_mode=acquisition_mode,
+                                dim3_interpretation=dim3_interpretation)
     
-    def _load_mat_file(self, file_path: str, key: str):
+    def _load_mat_file(self, file_path: str, key: str, acquisition_mode: str = "2d",
+                       dim3_interpretation: str = "coil_hw"):
         """Load .mat file with specified key"""
         from scipy import io
-        
+
         mat_data = io.loadmat(file_path)
-        
+
         if key not in mat_data:
             available = [k for k in mat_data.keys() if not k.startswith('__')]
             raise ValueError(f"Key '{key}' not found in MAT file. Available keys: {available}")
-        
+
         # Extract data
         raw_data = mat_data[key]
-        
+
         # Convert to numpy array if needed (MAT files often load as matrix type)
         if hasattr(raw_data, 'A'):
             raw_data = raw_data.A
-        
+
         # Squeeze single dimensions (MAT files may add extra dims)
         raw_data = np.squeeze(raw_data)
-        
-        # Create MRIData with preloaded data
-        self.mri_data = MRIData(file_path, preloaded_data=raw_data)
+
+        # Create MRIData with preloaded data and user options
+        self.mri_data = MRIData(file_path, preloaded_data=raw_data,
+                                acquisition_mode=acquisition_mode,
+                                dim3_interpretation=dim3_interpretation)
     
     def _convert_kspace(self):
         """Convert k-space to image - always auto-detect best mode"""
