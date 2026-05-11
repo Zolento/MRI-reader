@@ -6,6 +6,12 @@ Creates both image and k-space data in 2D and 3D formats
 import numpy as np
 import os
 
+try:
+    import h5py
+    HAS_H5PY = True
+except ImportError:
+    HAS_H5PY = False
+
 
 def generate_test_data():
     """Generate various test data files"""
@@ -92,7 +98,19 @@ def generate_test_data():
             kspace_3d_multi[ch, i] = np.fft.fft2(np.fft.ifftshift(image_slice))
     
     np.save(os.path.join(output_dir, "test_3d_kspace_multi.npy"), kspace_3d_multi)
-    
+
+    # 6. HDF5 2D image
+    if HAS_H5PY:
+        print("  - HDF5 2D image data (10 slices, 128x128)")
+        with h5py.File(os.path.join(output_dir, "test_2d_image.h5"), 'w') as f:
+            f.create_dataset('image', data=image_2d)
+
+        print("  - HDF5 3D k-space data (4 channels, 32 slices, 128x128)")
+        with h5py.File(os.path.join(output_dir, "test_3d_kspace.h5"), 'w') as f:
+            f.create_dataset('kspace', data=kspace_3d_multi)
+    else:
+        print("  - HDF5 files skipped (h5py not available)")
+
     print(f"\n✅ Test data generated in '{output_dir}/' directory")
     print("Files created:")
     for f in os.listdir(output_dir):

@@ -42,7 +42,8 @@ class MRIData:
     """
 
     def __init__(self, file_path: str, preloaded_data: Optional[np.ndarray] = None,
-                 acquisition_mode: str = "2d", dim3_interpretation: str = "coil_hw"):
+                 acquisition_mode: str = "2d", dim3_interpretation: str = "coil_hw",
+                 dim4_interpretation: str = "coil_slice_hw"):
         self.file_path = file_path
         self.raw_data: Optional[np.ndarray] = None
         self.data_type: Optional[DataType] = None
@@ -56,6 +57,7 @@ class MRIData:
         # User-provided hints for data interpretation
         self.acquisition_mode = acquisition_mode  # "2d" or "3d"
         self.dim3_interpretation = dim3_interpretation  # "coil_hw" or "slice_hw"
+        self.dim4_interpretation = dim4_interpretation  # "coil_slice_hw" or "slice_coil_hw"
 
         # Load and analyze data
         if preloaded_data is not None:
@@ -71,17 +73,38 @@ class MRIData:
             self._analyze_data()
     
     def _load_data(self):
+        """Load data from .npy or .h5/.hdf5 file"""
+        if self.file_path.endswith(('.h5', '.hdf5')):
+            self._load_h5_data()
+        else:
+            self._load_npy_data()
+
+    def _load_npy_data(self):
         """Load data from .npy file"""
         try:
             self.raw_data = np.load(self.file_path)
         except Exception as e:
             raise ValueError(f"Failed to load file {self.file_path}: {e}")
-        
-        # Convert to float64 for processing
+
         if np.iscomplexobj(self.raw_data):
             self.raw_data = self.raw_data.astype(np.complex128)
         else:
             self.raw_data = self.raw_data.astype(np.float64)
+
+    def _load_h5_data(self):
+        """Load data from .h5/.hdf5 file — pick the first dataset"""
+        import h5py
+        with h5py.File(self.file_path, 'r') as f:
+            keys = list(f.keys())
+            if not keys:
+                raise ValueError(f"No datasets found in {self.file_path}")
+            ds = f[keys[0]]
+            data = ds[()]
+        if np.iscomplexobj(data):
+            data = data.astype(np.complex128)
+        else:
+            data = data.astype(np.float64)
+        self.raw_data = data
     
     def _analyze_data(self):
         """Analyze data shape and determine type and dimensionality"""
@@ -123,32 +146,20 @@ class MRIData:
                 self.processed_data = self.raw_data.reshape(shape[0], 1, shape[1], shape[2])
 
         elif ndim == 4:
-            # (channels, slices, height, width)
-            # Use heuristics to identify dimension roles
             self.dimension = DataDimension.DIM_3D
 
-            # Try to identify which dimension is channels
-            # Channels are typically small (<16)
-            if shape[0] <= 16:
-                self.num_channels = shape[0]
-                self.num_slices = shape[1]
-                self.height = shape[2]
-                self.width = shape[3]
-                self.processed_data = self.raw_data
-            elif shape[1] <= 16:
-                # (slices, channels, height, width) - need to transpose
+            if self.dim4_interpretation == "slice_coil_hw":
                 self.num_channels = shape[1]
                 self.num_slices = shape[0]
                 self.height = shape[2]
                 self.width = shape[3]
                 self.processed_data = np.transpose(self.raw_data, (1, 0, 2, 3))
             else:
-                # Assume standard (channels, slices, height, width) with single channel
-                self.num_channels = 1
-                self.num_slices = shape[0]
-                self.height = shape[1]
-                self.width = shape[2]
-                self.processed_data = self.raw_data.reshape(1, shape[0], shape[1], shape[2])
+                self.num_channels = shape[0]
+                self.num_slices = shape[1]
+                self.height = shape[2]
+                self.width = shape[3]
+                self.processed_data = self.raw_data
         else:
             raise ValueError(f"Unsupported data dimension: {ndim}D, expected 2D, 3D, or 4D")
     

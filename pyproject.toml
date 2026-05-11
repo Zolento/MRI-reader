@@ -1,6 +1,6 @@
 [project]
 name = "mri-reader"
-version = "0.1.0"
+version = "0.2.0"
 description = "A MRI image reading and viewing tool with Qt-based GUI"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -9,4 +9,5 @@ dependencies = [
     "numpy>=1.21.0",
     "scipy>=1.7.0",
     "pillow>=9.0.0",
+    "h5py>=3.0.0",
 ]

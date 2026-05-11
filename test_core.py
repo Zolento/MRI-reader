@@ -151,6 +151,38 @@ def test_3d_slice_hw_interpretation():
     return True
 
 
+def test_4d_coil_slice_hw_interpretation():
+    """Test 4D data interpreted as (Coil, Slice, H, W)"""
+    print("Testing 4D data as (Coil, Slice, H, W)...")
+    test_data = np.random.random((3, 5, 64, 64))
+    mri = MRIData('test', preloaded_data=test_data, dim4_interpretation='coil_slice_hw')
+
+    assert mri.dimension == DataDimension.DIM_3D
+    assert mri.num_channels == 3
+    assert mri.num_slices == 5
+    assert mri.height == 64
+    assert mri.width == 64
+
+    print("  ✅ 4D (Coil, Slice, H, W) interpretation test passed")
+    return True
+
+
+def test_4d_slice_coil_hw_interpretation():
+    """Test 4D data interpreted as (Slice, Coil, H, W)"""
+    print("Testing 4D data as (Slice, Coil, H, W)...")
+    test_data = np.random.random((5, 3, 64, 64))
+    mri = MRIData('test', preloaded_data=test_data, dim4_interpretation='slice_coil_hw')
+
+    assert mri.dimension == DataDimension.DIM_3D
+    assert mri.num_channels == 3
+    assert mri.num_slices == 5
+    assert mri.height == 64
+    assert mri.width == 64
+
+    print("  ✅ 4D (Slice, Coil, H, W) interpretation test passed")
+    return True
+
+
 def test_image_processor():
     """Test image processing functions"""
     print("Testing image processor...")
@@ -215,6 +247,8 @@ def main():
         test_3d_kspace_3d_acquisition,
         test_3d_coil_hw_interpretation,
         test_3d_slice_hw_interpretation,
+        test_4d_coil_slice_hw_interpretation,
+        test_4d_slice_coil_hw_interpretation,
         test_image_processor,
     ]
     

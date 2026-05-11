@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         # Set window properties
         self.setWindowTitle("MRI Reader")
         self.resize(1200, 800)
+        self.setAcceptDrops(True)
     
     def _setup_ui(self):
         """Setup the user interface"""
@@ -220,48 +221,92 @@ class MainWindow(QMainWindow):
             self,
             "打开MRI文件",
             "",
-            "MRI Files (*.npy *.mat);;NumPy Files (*.npy);;MAT Files (*.mat);;All Files (*)"
+            "MRI Files (*.npy *.mat *.h5 *.hdf5);;NumPy Files (*.npy);;MAT Files (*.mat);;HDF5 Files (*.h5 *.hdf5);;All Files (*)"
         )
 
         if not file_path:
             return
 
-        # Ask user to select data type and acquisition options
+        self._open_file_path(file_path)
+
+    def _open_file_path(self, file_path: str):
+        """Load MRI data from a given file path (used by both dialog and drag&drop)"""
         data_type_result = self._ask_data_type_with_options(file_path)
         if data_type_result is None:
-            return  # User cancelled
+            return
 
-        is_kspace, acquisition_mode, dim3_interpretation = data_type_result
+        is_kspace, acquisition_mode, dim3_interpretation, dim4_interpretation = data_type_result
 
-        # If mat file, ask user to select key
         selected_key = None
         if file_path.endswith('.mat'):
             selected_key = self._ask_mat_key(file_path)
             if selected_key is None:
-                return  # User cancelled
+                return
+        elif file_path.endswith(('.h5', '.hdf5')):
+            selected_key = self._ask_h5_key(file_path)
+            if selected_key is None:
+                return
 
         try:
             self._load_file(file_path, is_kspace=is_kspace, mat_key=selected_key,
                            acquisition_mode=acquisition_mode,
-                           dim3_interpretation=dim3_interpretation)
+                           dim3_interpretation=dim3_interpretation,
+                           dim4_interpretation=dim4_interpretation)
         except Exception as e:
             QMessageBox.critical(
                 self,
                 "错误",
                 f"加载文件失败:\n{str(e)}"
             )
+
+    def dragEnterEvent(self, event):
+        """接受拖入的文件"""
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        """处理拖入的文件"""
+        for url in event.mimeData().urls():
+            file_path = url.toLocalFile()
+            if os.path.isfile(file_path):
+                self._open_file_path(file_path)
+                break  # 只处理第一个文件
     
+    def _peek_file_ndim(self, file_path: str) -> int:
+        """Peek at a file's ndim without loading it into MRIData."""
+        if file_path.endswith(('.h5', '.hdf5')):
+            import h5py
+            with h5py.File(file_path, 'r') as f:
+                for key in f.keys():
+                    ndim = f[key].ndim
+                    if ndim >= 2:
+                        return ndim
+                keys = list(f.keys())
+                return f[keys[0]].ndim if keys else 0
+        if file_path.endswith('.mat'):
+            from scipy import io
+            mat_data = io.loadmat(file_path)
+            valid_keys = [k for k in mat_data if not k.startswith('__')]
+            if not valid_keys:
+                return 0
+            return mat_data[valid_keys[0]].ndim
+        if file_path.endswith('.npy'):
+            return np.load(file_path).ndim
+        return 0
+
     def _ask_data_type_with_options(self, file_path: str):
         """
-        Ask user to select data type, acquisition mode, and 3D interpretation
+        Ask user to select data type, acquisition mode, 3D interpretation, and 4D order
 
         Returns:
-            Tuple of (is_kspace, acquisition_mode, dim3_interpretation) or None if cancelled
+            Tuple of (is_kspace, acquisition_mode, dim3_interpretation, dim4_interpretation) or None if cancelled
         """
         from PyQt5.QtWidgets import (
             QDialog, QRadioButton, QVBoxLayout, QHBoxLayout,
             QPushButton, QLabel, QGroupBox, QButtonGroup
         )
+
+        file_ndim = self._peek_file_ndim(file_path)
 
         dialog = QDialog(self)
         dialog.setWindowTitle("选择数据选项")
@@ -312,12 +357,26 @@ class MainWindow(QMainWindow):
         dim3_layout.addWidget(radio_slice_hw)
         layout.addWidget(dim3_group)
 
+        # === Group 4: 4D dimension order (visible only for 4D files) ===
+        dim4_group = QGroupBox("四维数据维度顺序")
+        dim4_layout = QVBoxLayout(dim4_group)
+        dim4_desc = QLabel("当原始数据有4个维度时 (dim0, dim1, H, W):")
+        dim4_desc.setStyleSheet("color: gray; font-size: 11px;")
+        dim4_layout.addWidget(dim4_desc)
+
+        radio_coil_slice_hw = QRadioButton("(Coil, Slice, H, W) — dim0线圈, dim1切片")
+        radio_coil_slice_hw.setChecked(True)
+        radio_slice_coil_hw = QRadioButton("(Slice, Coil, H, W) — dim0切片, dim1线圈")
+
+        dim4_layout.addWidget(radio_coil_slice_hw)
+        dim4_layout.addWidget(radio_slice_coil_hw)
+        layout.addWidget(dim4_group)
+
         # Update group availability based on selection
         def update_availability():
             is_ks = radio_kspace.isChecked()
             acq_group.setEnabled(is_ks)
-            # dim3 interpretation is always relevant for 3D data
-            dim3_group.setEnabled(True)
+            dim4_group.setVisible(True)
 
         radio_kspace.toggled.connect(update_availability)
         radio_image.toggled.connect(update_availability)
@@ -336,7 +395,8 @@ class MainWindow(QMainWindow):
             is_kspace = radio_kspace.isChecked()
             acquisition_mode = "2d" if radio_2d_acq.isChecked() else "3d"
             dim3_interp = "coil_hw" if radio_coil_hw.isChecked() else "slice_hw"
-            result[0] = (is_kspace, acquisition_mode, dim3_interp)
+            dim4_interp = "coil_slice_hw" if radio_coil_slice_hw.isChecked() else "slice_coil_hw"
+            result[0] = (is_kspace, acquisition_mode, dim3_interp, dim4_interp)
             dialog.accept()
 
         def on_cancel():
@@ -418,25 +478,33 @@ class MainWindow(QMainWindow):
         return None
     
     def _load_file(self, file_path: str, is_kspace: bool = True, mat_key: str = None,
-                   acquisition_mode: str = "2d", dim3_interpretation: str = "coil_hw"):
+                   acquisition_mode: str = "2d", dim3_interpretation: str = "coil_hw",
+                   dim4_interpretation: str = "coil_slice_hw"):
         """Load and process MRI file
 
         Args:
-            file_path: Path to the .npy or .mat file
+            file_path: Path to the .npy, .mat, or .h5 file
             is_kspace: True if k-space data, False if image data
-            mat_key: Key to use for .mat files (None for .npy)
+            mat_key: Key to use for .mat / .h5 files (None for .npy)
             acquisition_mode: "2d" for slice-by-slice, "3d" for volume acquisition
             dim3_interpretation: "coil_hw" or "slice_hw" for 3D raw data
+            dim4_interpretation: "coil_slice_hw" or "slice_coil_hw" for 4D raw data
         """
-        # Load data based on file type
         if file_path.endswith('.mat'):
             self._load_mat_file(file_path, mat_key,
                                acquisition_mode=acquisition_mode,
-                               dim3_interpretation=dim3_interpretation)
+                               dim3_interpretation=dim3_interpretation,
+                               dim4_interpretation=dim4_interpretation)
+        elif file_path.endswith(('.h5', '.hdf5')):
+            self._load_h5_file(file_path, mat_key,
+                              acquisition_mode=acquisition_mode,
+                              dim3_interpretation=dim3_interpretation,
+                              dim4_interpretation=dim4_interpretation)
         else:
             self._load_npy_file(file_path,
                                acquisition_mode=acquisition_mode,
-                               dim3_interpretation=dim3_interpretation)
+                               dim3_interpretation=dim3_interpretation,
+                               dim4_interpretation=dim4_interpretation)
 
         # Use user's selection instead of auto-detection
         self.is_kspace = is_kspace
@@ -474,13 +542,16 @@ class MainWindow(QMainWindow):
         self.enhancement_panel.blockSignals(False)
     
     def _load_npy_file(self, file_path: str, acquisition_mode: str = "2d",
-                       dim3_interpretation: str = "coil_hw"):
+                        dim3_interpretation: str = "coil_hw",
+                        dim4_interpretation: str = "coil_slice_hw"):
         """Load .npy file"""
         self.mri_data = MRIData(file_path, acquisition_mode=acquisition_mode,
-                                dim3_interpretation=dim3_interpretation)
+                                dim3_interpretation=dim3_interpretation,
+                                dim4_interpretation=dim4_interpretation)
     
     def _load_mat_file(self, file_path: str, key: str, acquisition_mode: str = "2d",
-                       dim3_interpretation: str = "coil_hw"):
+                        dim3_interpretation: str = "coil_hw",
+                        dim4_interpretation: str = "coil_slice_hw"):
         """Load .mat file with specified key"""
         from scipy import io
 
@@ -503,16 +574,93 @@ class MainWindow(QMainWindow):
         # Create MRIData with preloaded data and user options
         self.mri_data = MRIData(file_path, preloaded_data=raw_data,
                                 acquisition_mode=acquisition_mode,
-                                dim3_interpretation=dim3_interpretation)
-    
+                                dim3_interpretation=dim3_interpretation,
+                                dim4_interpretation=dim4_interpretation)
+
+    def _load_h5_file(self, file_path: str, key: str, acquisition_mode: str = "2d",
+                      dim3_interpretation: str = "coil_hw",
+                      dim4_interpretation: str = "coil_slice_hw"):
+        """Load .h5/.hdf5 file with specified key"""
+        import h5py
+
+        with h5py.File(file_path, 'r') as f:
+            if key not in f:
+                available = list(f.keys())
+                raise ValueError(f"Key '{key}' not found in H5 file. Available keys: {available}")
+            ds = f[key]
+            raw_data = ds[()]
+
+        if hasattr(raw_data, 'A'):
+            raw_data = raw_data.A
+        raw_data = np.squeeze(raw_data)
+
+        self.mri_data = MRIData(file_path, preloaded_data=raw_data,
+                                acquisition_mode=acquisition_mode,
+                                dim3_interpretation=dim3_interpretation,
+                                dim4_interpretation=dim4_interpretation)
+
+    def _ask_h5_key(self, file_path: str) -> str:
+        """Ask user to select a key from HDF5 file"""
+        from PyQt5.QtWidgets import (
+            QDialog, QComboBox, QVBoxLayout, QHBoxLayout, QPushButton, QLabel
+        )
+        import h5py
+
+        with h5py.File(file_path, 'r') as f:
+            keys = list(f.keys())
+
+        if not keys:
+            QMessageBox.warning(self, "警告", "H5文件中没有有效的数据集")
+            return None
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("选择H5数据集")
+        dialog.setMinimumWidth(400)
+
+        layout = QVBoxLayout(dialog)
+        filename = file_path.split('/')[-1]
+        layout.addWidget(QLabel(f"文件: {filename}"))
+        layout.addWidget(QLabel("请选择数据集:"))
+
+        key_combo = QComboBox()
+        with h5py.File(file_path, 'r') as f:
+            for key in keys:
+                shape = f[key].shape
+                key_combo.addItem(f"{key} (shape: {shape})")
+        layout.addWidget(key_combo)
+
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("确定")
+        btn_cancel = QPushButton("取消")
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+        layout.addLayout(btn_layout)
+
+        result = [None]
+
+        def on_ok():
+            selected = key_combo.currentText().split(' (')[0]
+            result[0] = selected
+            dialog.accept()
+
+        def on_cancel():
+            result[0] = None
+            dialog.reject()
+
+        btn_ok.clicked.connect(on_ok)
+        btn_cancel.clicked.connect(on_cancel)
+
+        if dialog.exec_() == QDialog.Accepted:
+            return result[0]
+        return None
+
     def _convert_kspace(self):
-        """Convert k-space to image - always auto-detect best mode"""
+        """Convert k-space to image using user-selected acquisition mode"""
         # Store original k-space for display
         self.kspace_data = self.mri_data.processed_data.copy()
         
-        # Auto-detect: use 3D IFFT for 3D data with multiple slices
-        use_3d = (self.mri_data.dimension == DataDimension.DIM_3D and
-                 self.mri_data.num_slices > 1)
+        # Use user-selected acquisition mode from the dialog
+        use_3d = (self.mri_data.acquisition_mode == "3d")
 
         self.current_image = KSpaceConverter.convert(self.mri_data, mode_3d=use_3d)
     

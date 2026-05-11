@@ -141,6 +141,26 @@ except Exception as e:
     print(f"   ❌ PyQt5 not available: {e}")
     sys.exit(1)
 
+# Test 8: HDF5 loading
+print("\n8. Testing HDF5 loading...")
+try:
+    import h5py
+    h5_files = [
+        ('test_data/test_2d_image.h5', {'dim3_interpretation': 'slice_hw'}),
+        ('test_data/test_3d_kspace.h5', {}),
+    ]
+    for test_file, kwargs in h5_files:
+        if os.path.exists(test_file):
+            mri = MRIData(test_file, **kwargs)
+            print(f"   ✅ {test_file}: {mri.dimension.value}, {mri.data_type.value}, {mri.num_slices} slices")
+        else:
+            print(f"   ⚠️  {test_file}: Not found (run generate_test_data.py)")
+except Exception as e:
+    print(f"   ❌ HDF5 loading failed: {e}")
+    import traceback
+    traceback.print_exc()
+    sys.exit(1)
+
 print()
 print("=" * 60)
 print("✅ ALL VERIFICATIONS PASSED!")

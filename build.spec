@@ -26,6 +26,7 @@ a = Analysis(
         'scipy',
         'scipy.fft',
         'scipy.ndimage',
+        'h5py',
         'PIL',
     ],
     hookspath=[],
