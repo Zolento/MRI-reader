@@ -34,9 +34,9 @@ fi
 echo "Virtual environment ready"
 echo ""
 
-# Install dependencies
-echo "Installing dependencies..."
-uv pip install -e .
+# Install dependencies (dev extras pull in pytest / ruff / black)
+echo "Installing dependencies (with dev tools)..."
+uv pip install -e ".[dev]"
 echo "Dependencies installed"
 echo ""
 
@@ -54,6 +54,10 @@ if uv run python -c "import PyQt5; import numpy; print('All dependencies install
     echo ""
     echo "Or use uv directly:"
     echo "  uv run python -m src.main"
+    echo ""
+    echo "Run the tests / lint:"
+    echo "  uv run python -m pytest -q"
+    echo "  uv run ruff check . && uv run black --check ."
     echo ""
 else
     echo ""
