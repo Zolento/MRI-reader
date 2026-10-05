@@ -216,7 +216,7 @@ def test_prepare_preloaded_array_rejects_0d_and_1d():
 
 
 def test_prepare_preloaded_array_trailing_singletons():
-    """Only *trailing* size-1 axes are stripped; >4-D without them is rejected."""
+    """Trailing size-1 axes are stripped; leading ones and >4-D are policed."""
     from src.app.file_loader import FileLoader
 
     stripped = FileLoader._prepare_preloaded_array(np.zeros((1, 5, 7, 11, 1)))
@@ -224,6 +224,26 @@ def test_prepare_preloaded_array_trailing_singletons():
     assert FileLoader._prepare_preloaded_array(np.zeros((2, 3, 4, 5))).shape == (2, 3, 4, 5)
     with pytest.raises(ValueError, match="Unsupported data dimension"):
         FileLoader._prepare_preloaded_array(np.zeros((2, 3, 4, 5, 6)))
+
+
+def test_prepare_preloaded_array_strips_trailing_singleton_3d():
+    """MATLAB pads plain 2-D variables to ``(H, W, 1)``.
+
+    Such a trailing singleton carries no indexing information, so it is stripped
+    and the variable is read as the 2-D image ``(H, W)`` -- the historical
+    behaviour.  Keeping it as 3-D would send it down the ``dim3`` branch and
+    display a single column instead of the image.
+    """
+    from src.app.file_loader import FileLoader
+
+    assert FileLoader._prepare_preloaded_array(np.zeros((4, 6, 1))).shape == (4, 6)
+    assert FileLoader._prepare_preloaded_array(np.zeros((4, 6, 1, 1))).shape == (4, 6)
+    # A leading singleton is real information and must survive.
+    assert FileLoader._prepare_preloaded_array(np.zeros((1, 4, 6))).shape == (1, 4, 6)
+    # Four-dimensional volumes keep their (Coil, Slice, H, W) shape.
+    assert FileLoader._prepare_preloaded_array(np.zeros((1, 5, 7, 11))).shape == (1, 5, 7, 11)
+    # Never strip below two dimensions.
+    assert FileLoader._prepare_preloaded_array(np.zeros((7, 1))).shape == (7, 1)
 
 
 def test_mat_missing_key_raises_value_error(tmp_path):

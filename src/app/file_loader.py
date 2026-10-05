@@ -66,16 +66,22 @@ class FileLoader:
         """Normalize a MATLAB variable without destroying real singleton axes.
 
         MATLAB stores at least 2 dimensions, and ``scipy.io.loadmat`` reproduces
-        them faithfully, so no squeeze is needed.  An unconditional squeeze used
-        to collapse a meaningful singleton axis (e.g. a single-coil
-        ``(1, S, H, W)`` volume) and silently reinterpret the slice axis as
-        channels - the worst failure mode for a tool whose job is confirming
-        shape semantics.  Rules:
+        them faithfully.  An unconditional squeeze used to collapse a meaningful
+        singleton axis (e.g. a single-coil ``(1, S, H, W)`` volume) and silently
+        reinterpret the slice axis as channels - the worst failure mode for a
+        tool whose job is confirming shape semantics.  Rules:
 
         * ``ndim < 2``: raise (a 1-D variable cannot be a slice/volume).
-        * ``2 <= ndim <= 4``: keep as-is; the user's dim3/dim4 choice decides.
-        * ``ndim > 4``: strip only *trailing* singleton axes (MATLAB padding),
-          then require <= 4 dimensions.
+        * *trailing* size-1 axes are stripped while more than 2 dimensions
+          remain.  MATLAB pads trailing singletons for plain 2-D variables
+          (``(H, W, 1)``) and a trailing axis of length 1 carries no indexing
+          information, so this preserves the historical reading of such
+          variables instead of letting them fall into the 3-D branch.
+        * *leading* size-1 axes are always preserved: ``(1, S, H, W)`` is a
+          genuine single-coil volume, and dropping the axis would make the
+          user's explicit ``dim4`` choice meaningless.
+        * after that, require ``2 <= ndim <= 4``; the user's dim3/dim4 choice
+          decides how the remaining axes are read.
         """
         if hasattr(raw_data, "A"):  # legacy scipy sparse/matrix wrapper
             raw_data = raw_data.A
@@ -83,7 +89,7 @@ class FileLoader:
         ndim = raw_data.ndim
         if ndim < 2:
             raise ValueError(f"Unsupported data dimension: {ndim}D, expected 2D, 3D, or 4D")
-        while raw_data.ndim > 4 and raw_data.shape[-1] == 1:
+        while raw_data.ndim > 2 and raw_data.shape[-1] == 1:
             # Trailing size-1 axes carry no indexing information.
             raw_data = raw_data[..., 0]
         if raw_data.ndim > 4:
