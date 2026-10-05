@@ -18,6 +18,8 @@ jobs:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
+      # Do not let one platform's failure/cancellation abort the others.
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
@@ -92,7 +94,12 @@ jobs:
     name: Create GitHub Release
     needs: [build]
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    # ``always()`` keeps the release alive when one platform's build was
+    # cancelled by a GitHub runner-capacity incident: whatever artifacts did
+    # finish still get published, and a re-run of a failed platform updates
+    # the same release.  Without it a single flaky runner blocks the release
+    # entirely (this actually happened on the v0.3.0 run).
+    if: always() && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
 
     steps:
     - name: Checkout code
@@ -102,15 +109,25 @@ jobs:
       uses: actions/download-artifact@v4
       with:
         path: artifacts
+      continue-on-error: true
+
+    - name: List downloaded artifacts
+      run: find artifacts -type f 2>/dev/null || echo "(no artifacts downloaded)"
 
     - name: Create Release
       uses: softprops/action-gh-release@v2
-      if: startsWith(github.ref, 'refs/tags/')
+      if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
       with:
+        # A tag push supplies github.ref_name; the manual dispatch supplies the
+        # version input.  Previously the manual path could never publish because
+        # this step was gated on refs/tags/ only.
+        tag_name: ${{ github.event.inputs.release_version || github.ref_name }}
         files: |
           artifacts/MRI-Reader-Windows/MRI-Reader-Windows.zip
           artifacts/MRI-Reader-Linux/MRI-Reader-Linux.tar.gz
           artifacts/MRI-Reader-macOS/MRI-Reader-macOS.zip
+        # Tolerate a platform whose runner was unavailable instead of failing.
+        fail_on_unmatched_files: false
         body_path: RELEASE_NOTES.md
         draft: false
         prerelease: false
