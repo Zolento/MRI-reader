@@ -3,4 +3,4 @@
 #: Single source of truth for the application version (also used by the About
 #: dialog and ``QApplication.setApplicationVersion``).  Keep in sync with
 #: ``pyproject.toml``.
-__version__ = "0.2.0"
+__version__ = "0.3.0"
