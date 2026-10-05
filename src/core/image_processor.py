@@ -3,18 +3,20 @@ Image Processor - Handles all image enhancement operations
 Supports contrast, brightness, log transform, rotation, and zoom
 """
 
-import numpy as np
 from typing import Tuple
-from scipy.ndimage import rotate, zoom as scipy_zoom
+
+import numpy as np
+from scipy.ndimage import rotate
+from scipy.ndimage import zoom as scipy_zoom
 
 
 class ImageProcessor:
     """
     Image processing class for MRI image enhancement
-    
+
     All operations work on 2D numpy arrays and return processed images
     """
-    
+
     def __init__(self):
         # Default parameters
         self.contrast = 1.0
@@ -25,7 +27,7 @@ class ImageProcessor:
         self.zoom_factor = 1.0
         self.flip_h = False
         self.flip_v = False
-    
+
     def reset(self):
         """Reset all parameters to defaults"""
         self.contrast = 1.0
@@ -36,7 +38,7 @@ class ImageProcessor:
         self.zoom_factor = 1.0
         self.flip_h = False
         self.flip_v = False
-    
+
     def process(self, image: np.ndarray) -> np.ndarray:
         """
         Apply all enhancements to the image
@@ -51,20 +53,18 @@ class ImageProcessor:
         if np.iscomplexobj(image):
             image = np.abs(image)
 
-        result = image.copy().astype(np.float64)
+        # Single float64 allocation: nan_to_num runs in place on our own copy.
+        result = np.array(image, dtype=np.float64)
 
         # Clean up NaN and Inf values
-        result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
+        np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0, copy=False)
 
         # Apply log transform first (if enabled)
         if self.use_log:
             result = self._apply_log(result)
 
         # Normalize to [0, 1] before contrast/brightness
-        if result.max() > result.min():
-            result = (result - result.min()) / (result.max() - result.min())
-        else:
-            result = np.zeros_like(result)
+        result = self._normalize_unit(result)
 
         # Apply contrast and brightness on normalized data
         result = self._apply_contrast_brightness(result)
@@ -88,7 +88,20 @@ class ImageProcessor:
             result = self.flip_vertical(result)
 
         return result
-    
+
+    def _normalize_unit(self, image: np.ndarray) -> np.ndarray:
+        """
+        Normalize an array to [0, 1] (a constant array becomes all zeros).
+
+        Kept bit-identical to the previous inline expression; extremes are
+        cached so ``min``/``max`` are not recomputed.
+        """
+        lo = image.min()
+        hi = image.max()
+        if hi > lo:
+            return (image - lo) / (hi - lo)
+        return np.zeros_like(image)
+
     def _apply_log(self, image: np.ndarray) -> np.ndarray:
         """
         Apply logarithmic transform
@@ -96,20 +109,22 @@ class ImageProcessor:
         """
         # Ensure all values are positive before log
         image_clean = np.maximum(image, 0)
-        
+
         # Add small epsilon to avoid log(0)
         epsilon = 1e-8
         result = np.log(image_clean + epsilon)
-        
+
         # Normalize back to 0-1 range
-        if result.max() > result.min():
-            result = (result - result.min()) / (result.max() - result.min())
-        
+        lo = result.min()
+        hi = result.max()
+        if hi > lo:
+            result = (result - lo) / (hi - lo)
+
         # Clean up any NaN/Inf
         result = np.nan_to_num(result, nan=0.0, posinf=1.0, neginf=0.0)
-        
+
         return result
-    
+
     def _apply_contrast_brightness(self, image: np.ndarray) -> np.ndarray:
         """
         Apply contrast and brightness adjustments
@@ -123,51 +138,48 @@ class ImageProcessor:
         result = np.clip(result, 0, 1)
 
         return result
-    
+
     def _apply_rotation(self, image: np.ndarray, angle: float) -> np.ndarray:
         """
         Rotate image by specified angle
-        
+
         Args:
             image: 2D array
             angle: rotation angle in degrees
         """
         # Use scipy rotate with order=1 (bilinear interpolation)
-        result = rotate(image, angle=angle, reshape=False, order=1, mode='constant', cval=0)
+        result = rotate(image, angle=angle, reshape=False, order=1, mode="constant", cval=0)
         return result
-    
+
     def _apply_zoom(self, image: np.ndarray, factor: float) -> np.ndarray:
         """
         Zoom image by specified factor
-        
+
         Args:
             image: 2D array
             factor: zoom factor (>1 zooms in, <1 zooms out)
         """
         # Calculate zoom for each dimension
         zoom_factors = (factor, factor)
-        
+
         # Apply zoom
-        result = scipy_zoom(image, zoom_factors, order=1, mode='constant', cval=0)
-        
+        result = scipy_zoom(image, zoom_factors, order=1, mode="constant", cval=0)
+
         # Resize back to original shape
         result = self._resize_to_original(result, image.shape)
-        
+
         return result
-    
+
     def _resize_to_original(self, image: np.ndarray, original_shape: Tuple[int, int]) -> np.ndarray:
         """
         Resize image to original shape by center cropping or padding
         """
         if image.shape == original_shape:
             return image
-        
-        result = np.zeros(original_shape, dtype=image.dtype)
-        
+
         # Calculate crop/pad amounts
         h_diff = image.shape[0] - original_shape[0]
-        w_diff = image.shape[1] - original_shape[1]
-        
+
         if h_diff > 0:
             # Image is larger, crop vertically
             start_h = h_diff // 2
@@ -178,8 +190,8 @@ class ImageProcessor:
             pad_h = -h_diff
             pad_top = pad_h // 2
             pad_bottom = pad_h - pad_top
-            image = np.pad(image, ((pad_top, pad_bottom), (0, 0)), mode='constant')
-        
+            image = np.pad(image, ((pad_top, pad_bottom), (0, 0)), mode="constant")
+
         if image.shape[1] > original_shape[1]:
             # Image is larger, crop horizontally
             start_w = (image.shape[1] - original_shape[1]) // 2
@@ -190,28 +202,28 @@ class ImageProcessor:
             pad_w = original_shape[1] - image.shape[1]
             pad_left = pad_w // 2
             pad_right = pad_w - pad_left
-            image = np.pad(image, ((0, 0), (pad_left, pad_right)), mode='constant')
-        
+            image = np.pad(image, ((0, 0), (pad_left, pad_right)), mode="constant")
+
         return image
-    
+
     def rotate_90(self, image: np.ndarray, times: int = 1) -> np.ndarray:
         """
         Rotate image by 90 degrees
-        
+
         Args:
             image: 2D array
             times: number of 90-degree rotations
         """
         return np.rot90(image, k=times)
-    
+
     def flip_horizontal(self, image: np.ndarray) -> np.ndarray:
         """Flip image horizontally"""
         return np.fliplr(image)
-    
+
     def flip_vertical(self, image: np.ndarray) -> np.ndarray:
         """Flip image vertically"""
         return np.flipud(image)
-    
+
     @staticmethod
     def normalize_image(image: np.ndarray) -> np.ndarray:
         """
@@ -219,10 +231,10 @@ class ImageProcessor:
         """
         if image.max() == image.min():
             return np.zeros_like(image)
-        
+
         normalized = (image - image.min()) / (image.max() - image.min())
         return normalized
-    
+
     @staticmethod
     def convert_to_8bit(image: np.ndarray) -> np.ndarray:
         """
