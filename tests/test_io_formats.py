@@ -125,16 +125,105 @@ def test_mat_round_trip(tmp_path):
     assert np.allclose(md.processed_data[0], array)
 
 
-def test_mat_squeezes_singleton_dimensions(tmp_path):
+def test_mat_preserves_singleton_dimensions(tmp_path):
+    """A size-1 axis is real information; the loader must not squeeze it away.
+
+    ``np.squeeze`` used to collapse a meaningful leading singleton (e.g. a
+    single-coil volume) and silently reinterpret the slice axis as channels.
+    Re-expressing the same outcome with a ``(1, 4, 6)`` 3-D variable: the raw
+    array keeps its shape, and the user's explicit ``dim3`` choice then produces
+    the displayed volume.
+    """
     io = pytest.importorskip("scipy.io")
     array = np.arange(4 * 6, dtype=float).reshape(1, 4, 6)
-    path = tmp_path / "squeezed.mat"
+    path = tmp_path / "singleton.mat"
     io.savemat(str(path), {"vol": array})
 
     window = SimpleNamespace(mri_data=None)
     _loader(window).load_mat_file(str(path), "vol", dim3_interpretation="slice_hw")
     md = window.mri_data
-    assert md.raw_data.shape == (4, 6)  # singleton dim squeezed away
+    # The fix: the leading size-1 axis survives (a squeeze would give (4, 6)).
+    assert md.raw_data.shape == (1, 4, 6)
+    # The user-visible volume follows from that preserved shape + dim3 choice.
+    assert md.processed_shape == (1, 1, 4, 6)
+    assert md.num_slices == 1
+    assert (md.height, md.width) == (4, 6)
+    assert np.array_equal(md.processed_data[0, 0], array[0])
+
+
+@pytest.mark.parametrize(
+    "raw_shape,dim4_interpretation,expected_channels,expected_slices",
+    [
+        ((1, 5, 7, 11), "coil_slice_hw", 1, 5),  # leading single coil
+        ((5, 1, 7, 11), "slice_coil_hw", 1, 5),  # symmetric single coil
+        ((2, 5, 7, 11), "coil_slice_hw", 2, 5),  # non-singleton control
+    ],
+    ids=["1x5x7x11-coil", "5x1x7x11-slice", "2x5x7x11-control"],
+)
+def test_mat_4d_singleton_axes_are_not_squeezed(
+    tmp_path, raw_shape, dim4_interpretation, expected_channels, expected_slices
+):
+    """D-MAT: an explicit 4-D interpretation must see the true axis sizes."""
+    io = pytest.importorskip("scipy.io")
+    array = np.arange(np.prod(raw_shape), dtype=float).reshape(raw_shape)
+    path = tmp_path / f"vol_{'x'.join(map(str, raw_shape))}.mat"
+    io.savemat(str(path), {"vol": array})
+
+    window = SimpleNamespace(mri_data=None)
+    _loader(window).load_mat_file(str(path), "vol", dim4_interpretation=dim4_interpretation)
+    md = window.mri_data
+    assert md.raw_data.shape == raw_shape
+    assert (md.num_channels, md.num_slices) == (expected_channels, expected_slices)
+    assert md.processed_shape == (expected_channels, expected_slices, 7, 11)
+
+    # Channel 0 must be the first coil, slice axis the second raw axis.
+    for sl in range(expected_slices):
+        if dim4_interpretation == "slice_coil_hw":
+            expected = array[sl, 0]
+        else:
+            expected = array[0, sl]
+        assert np.array_equal(md.processed_data[0, sl], expected)
+
+
+def test_mat_2d_variable_unchanged(tmp_path):
+    """2-D .mat variables keep their previous interpretation."""
+    io = pytest.importorskip("scipy.io")
+    array = np.arange(7 * 11, dtype=float).reshape(7, 11)
+    path = tmp_path / "flat.mat"
+    io.savemat(str(path), {"vol": array})
+
+    window = SimpleNamespace(mri_data=None)
+    _loader(window).load_mat_file(str(path), "vol")
+    md = window.mri_data
+    assert md.raw_data.shape == (7, 11)
+    assert md.processed_shape == (1, 1, 7, 11)
+    assert np.array_equal(md.processed_data[0, 0], array)
+
+
+def test_prepare_preloaded_array_rejects_0d_and_1d():
+    """The loader's shape policy: 0-D/1-D input fails with a clear ValueError.
+
+    ``scipy.io.savemat`` promotes 1-D variables to ``(1, N)`` and scalars to
+    ``(1, 1)``, so a ``.mat`` file cannot carry a true 0-D/1-D variable; the
+    policy is still exercised directly on the helper (and via the H5 eager
+    fallback, which shares it).
+    """
+    from src.app.file_loader import FileLoader
+
+    for bad in (np.array(5.0), np.arange(5)):
+        with pytest.raises(ValueError, match="Unsupported data dimension"):
+            FileLoader._prepare_preloaded_array(bad)
+
+
+def test_prepare_preloaded_array_trailing_singletons():
+    """Only *trailing* size-1 axes are stripped; >4-D without them is rejected."""
+    from src.app.file_loader import FileLoader
+
+    stripped = FileLoader._prepare_preloaded_array(np.zeros((1, 5, 7, 11, 1)))
+    assert stripped.shape == (1, 5, 7, 11)
+    assert FileLoader._prepare_preloaded_array(np.zeros((2, 3, 4, 5))).shape == (2, 3, 4, 5)
+    with pytest.raises(ValueError, match="Unsupported data dimension"):
+        FileLoader._prepare_preloaded_array(np.zeros((2, 3, 4, 5, 6)))
 
 
 def test_mat_missing_key_raises_value_error(tmp_path):

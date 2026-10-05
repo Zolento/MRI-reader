@@ -553,3 +553,37 @@ def test_arrow_keys_advance_and_sync_canvases(main_window, monkeypatch, asym_pat
     assert navigator.current_slice == navigator.slider.maximum()
     assert main_window.canvas.current_slice == navigator.slider.maximum()
     assert main_window.kspace_canvas.current_slice == navigator.slider.maximum()
+
+
+# --------------------------------------------------------------------------- #
+# D-MAT regression through the frozen open-file seam
+# --------------------------------------------------------------------------- #
+def test_mat_4d_singleton_coil_axis_via_open_file_path(main_window, monkeypatch, tmp_path):
+    """D-MAT end-to-end: a (1,5,7,11) .mat must load as C=1, S=5.
+
+    Goes through ``_open_file_path`` with the class-level dialog seams stubbed,
+    so the real file-loader path (not just ``load_mat_file``) is exercised.
+    """
+    io = pytest.importorskip("scipy.io")
+    from _helpers import stub_mainwindow_dialogs
+
+    from src.main_window import MainWindow
+
+    array = np.arange(1 * 5 * 7 * 11, dtype=float).reshape(1, 5, 7, 11)
+    path = tmp_path / "single_coil.mat"
+    io.savemat(str(path), {"vol": array})
+
+    stub_mainwindow_dialogs(monkeypatch, is_kspace=False, dim4_interpretation="coil_slice_hw")
+    monkeypatch.setattr(MainWindow, "_ask_mat_key", lambda self, p: "vol")
+
+    main_window._open_file_path(str(path))
+
+    md = main_window.mri_data
+    assert md.raw_data.shape == (1, 5, 7, 11)
+    assert (md.num_channels, md.num_slices) == (1, 5)
+    assert md.processed_shape == (1, 5, 7, 11)
+
+    # Every slice of the single coil must be displayable.
+    for index in range(5):
+        main_window.slice_navigator.slider.setValue(index)
+        assert main_window.canvas.pixmap is not None, f"slice {index} did not render"

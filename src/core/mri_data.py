@@ -51,6 +51,12 @@ class _LazyH5Source:
     Only shape/dtype metadata is read at construction; pixel data is fetched on
     demand through :meth:`read`.  The file handle is kept open so repeated slice
     reads are cheap and is released by :meth:`close`.
+
+    Once :meth:`close` has been called the source is permanently dead: a later
+    :meth:`read` raises ``ValueError`` instead of silently reopening the file.
+    No legitimate path needs a resurrected handle -- :meth:`MRIData.close`
+    discards the source -- and failing loudly prevents an unnoticed descriptor
+    from being held open after teardown.
     """
 
     def __init__(self, path: str, key: str):
@@ -64,6 +70,7 @@ class _LazyH5Source:
             self.stored_dtype = ds.dtype
             self.ndim = ds.ndim
         self._file = None
+        self._closed = False
 
     def _open(self):
         import h5py
@@ -74,9 +81,15 @@ class _LazyH5Source:
 
     def read(self, indexer):
         """Read a subset (an h5py-style index tuple) of the dataset."""
+        if self._closed:
+            raise ValueError(
+                f"Cannot read from closed HDF5 source {self.path!r} " f"(dataset {self.key!r})"
+            )
         return self._open()[self.key][indexer]
 
     def close(self) -> None:
+        """Release the underlying file handle; the source cannot be reused."""
+        self._closed = True
         if self._file is not None:
             try:
                 self._file.close()
@@ -205,6 +218,10 @@ class MRIData:
 
     def _materialize_raw(self) -> np.ndarray:
         if self._raw_data is None:
+            if self._lazy is None:
+                raise ValueError(
+                    f"No data available: {self.file_path!r} was closed or never " "held a dataset"
+                )
             stored = self._lazy.read(())
             if np.iscomplexobj(stored):
                 self._raw_data = stored.astype(np.complex128)
@@ -236,19 +253,32 @@ class MRIData:
 
     def _select_h5_dataset(self, f, keys: Sequence[str]) -> str:
         """
-        Pick the dataset to load.
+        Pick the dataset to load from the top-level keys.
 
-        Prefer the first top-level numeric dataset that is 2D/3D/4D (this skips
-        metadata like ``ismrmrd_header``); fall back to the first key so the
-        previous error behavior for non-image files is preserved.
+        Only :class:`h5py.Dataset` objects are considered (top-level groups are
+        skipped, matching the app layer's ``ask_h5_key``/``peek_file_ndim``).
+        Preference order:
+
+        1. the first numeric 2D/3D/4D dataset -- this skips metadata such as the
+           0-D object ``ismrmrd_header`` in ISMRMRD files;
+        2. otherwise the first dataset of any rank, so an unsupported 0-D/1-D
+           dataset reaches :meth:`_analyze_data` and fails there with the clean
+           ``Unsupported data dimension`` error.
+
+        Raises:
+            ValueError: if the file contains no dataset at all (groups only).
         """
-        for key in keys:
-            obj = f.get(key)
-            if obj is None or not hasattr(obj, "shape") or not hasattr(obj, "dtype"):
-                continue  # h5py Group
-            if obj.ndim in (2, 3, 4) and obj.dtype.kind in "fiubc":
+        import h5py
+
+        datasets = [key for key in keys if isinstance(f.get(key), h5py.Dataset)]
+        if not datasets:
+            raise ValueError(f"No datasets found in {self.file_path}")
+
+        for key in datasets:
+            ds = f[key]
+            if ds.ndim in (2, 3, 4) and ds.dtype.kind in "fiubc":
                 return key
-        return keys[0]
+        return datasets[0]
 
     def _load_h5_data(self):
         """Open the first meaningful dataset in an .h5/.hdf5 file lazily"""
@@ -262,6 +292,13 @@ class MRIData:
                 if self.h5_key not in f:
                     raise ValueError(
                         f"Key '{self.h5_key}' not found in H5 file. " f"Available keys: {keys}"
+                    )
+                obj = f[self.h5_key]
+                if not isinstance(obj, h5py.Dataset):
+                    raise ValueError(
+                        f"Key '{self.h5_key}' is not a dataset in H5 file. "
+                        f"Available datasets: "
+                        f"{[k for k in keys if isinstance(f.get(k), h5py.Dataset)]}"
                     )
                 key = self.h5_key
             else:
@@ -299,12 +336,14 @@ class MRIData:
         shape = self._raw_shape
         ndim = len(shape)
 
-        # Heuristic to determine if data is k-space or image
-        self.data_type = self._detect_data_type()
-
-        # Validate dimensionality before normalizing
+        # Validate dimensionality *before* any type detection: 0-D/1-D data must
+        # fail with the same clean ValueError for real and complex input, not
+        # with an IndexError from the magnitude heuristic.
         if ndim not in (2, 3, 4):
             raise ValueError(f"Unsupported data dimension: {ndim}D, expected 2D, 3D, or 4D")
+
+        # Heuristic to determine if data is k-space or image
+        self.data_type = self._detect_data_type()
 
         # Normalize shape to 4D: (channels, slices, height, width)
         if ndim == 2:

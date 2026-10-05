@@ -10,8 +10,8 @@ etc.).  That is deliberate - the offscreen GUI gate patches those names on the
 from __future__ import annotations
 
 import inspect
+import os
 
-import numpy as np
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -31,6 +31,67 @@ class FileLoader:
 
     def __init__(self, window):
         self.window = window
+        #: One-entry cache of the last parsed MAT file: ``(signature, dict)``.
+        self._mat_cache = None
+
+    # ------------------------------------------------------------------
+    # MAT parsing (shared, cached)
+    # ------------------------------------------------------------------
+    def _load_mat(self, file_path: str) -> dict:
+        """Parse a MAT file once per (path, size, mtime).
+
+        The open-file flow touches a MAT file up to three times (ndim peek,
+        key dialog, actual load).  ``scipy.io.loadmat`` must parse the whole
+        container, so a one-entry cache avoids paying that cost three times.
+        """
+        try:
+            stat = os.stat(file_path)
+            signature = (os.path.abspath(file_path), stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            signature = None
+
+        if signature is not None and self._mat_cache is not None:
+            if self._mat_cache[0] == signature:
+                return self._mat_cache[1]
+
+        from scipy import io
+
+        mat_data = io.loadmat(file_path)
+        if signature is not None:
+            self._mat_cache = (signature, mat_data)
+        return mat_data
+
+    @staticmethod
+    def _prepare_preloaded_array(raw_data):
+        """Normalize a MATLAB variable without destroying real singleton axes.
+
+        MATLAB stores at least 2 dimensions, and ``scipy.io.loadmat`` reproduces
+        them faithfully, so no squeeze is needed.  An unconditional squeeze used
+        to collapse a meaningful singleton axis (e.g. a single-coil
+        ``(1, S, H, W)`` volume) and silently reinterpret the slice axis as
+        channels - the worst failure mode for a tool whose job is confirming
+        shape semantics.  Rules:
+
+        * ``ndim < 2``: raise (a 1-D variable cannot be a slice/volume).
+        * ``2 <= ndim <= 4``: keep as-is; the user's dim3/dim4 choice decides.
+        * ``ndim > 4``: strip only *trailing* singleton axes (MATLAB padding),
+          then require <= 4 dimensions.
+        """
+        if hasattr(raw_data, "A"):  # legacy scipy sparse/matrix wrapper
+            raw_data = raw_data.A
+
+        ndim = raw_data.ndim
+        if ndim < 2:
+            raise ValueError(f"Unsupported data dimension: {ndim}D, expected 2D, 3D, or 4D")
+        while raw_data.ndim > 4 and raw_data.shape[-1] == 1:
+            # Trailing size-1 axes carry no indexing information.
+            raw_data = raw_data[..., 0]
+        if raw_data.ndim > 4:
+            raise ValueError(
+                f"Unsupported data dimension: {ndim}D with no trailing singleton axis, "
+                "expected 2D, 3D, or 4D"
+            )
+        return raw_data
 
     # ------------------------------------------------------------------
     # Orchestration
@@ -166,23 +227,15 @@ class FileLoader:
         dim4_interpretation: str = "coil_slice_hw",
     ):
         """Load .mat file with specified key"""
-        from scipy import io
-
-        mat_data = io.loadmat(file_path)
+        mat_data = self._load_mat(file_path)
 
         if key not in mat_data:
             available = [k for k in mat_data.keys() if not k.startswith("__")]
             raise ValueError(f"Key '{key}' not found in MAT file. Available keys: {available}")
 
-        # Extract data
-        raw_data = mat_data[key]
-
-        # Convert to numpy array if needed (MAT files often load as matrix type)
-        if hasattr(raw_data, "A"):
-            raw_data = raw_data.A
-
-        # Squeeze single dimensions (MAT files may add extra dims)
-        raw_data = np.squeeze(raw_data)
+        # Keep the stored dimensionality: the user's dim3/dim4 choice must win,
+        # so only genuinely empty trailing padding is stripped.
+        raw_data = self._prepare_preloaded_array(mat_data[key])
 
         # Create MRIData with preloaded data and user options
         self._install(
@@ -227,11 +280,11 @@ class FileLoader:
             self._install(MRIData(file_path, h5_key=key, **kwargs))
             return
 
+        # No eager reader on the installed core: read the dataset but keep its
+        # stored dimensions (no squeeze - a singleton coil axis is meaningful).
         with h5py.File(file_path, "r") as f:
             raw_data = f[key][()]
-        if hasattr(raw_data, "A"):
-            raw_data = raw_data.A
-        raw_data = np.squeeze(raw_data)
+        raw_data = self._prepare_preloaded_array(raw_data)
         self._install(MRIData(file_path, preloaded_data=raw_data, **kwargs))
 
     # ------------------------------------------------------------------
@@ -292,18 +345,15 @@ class FileLoader:
             # "unknown" instead of crashing the dialog.
             return 0
 
-    @staticmethod
-    def _peek_mat_ndim(file_path: str) -> int:
+    def _peek_mat_ndim(self, file_path: str) -> int:
         """First variable's ndim.
 
         ``scipy.io.loadmat`` has no header-only mode - the MAT container must be
-        parsed as a whole - so this branch keeps that unavoidable cost and only
-        guards against malformed content.
+        parsed as a whole - so ``_load_mat`` caches that parse and shares it
+        with the key dialog and the actual load.
         """
         try:
-            from scipy import io
-
-            mat_data = io.loadmat(file_path)
+            mat_data = self._load_mat(file_path)
             valid_keys = [k for k in mat_data if not k.startswith("__")]
             if not valid_keys:
                 return 0
@@ -434,10 +484,9 @@ class FileLoader:
             Selected key string, or None if cancelled
         """
         from PyQt5.QtWidgets import QMessageBox
-        from scipy import io
 
-        # Load mat file to get keys
-        mat_data = io.loadmat(file_path)
+        # Parsed once and shared with the ndim peek and the actual load.
+        mat_data = self._load_mat(file_path)
 
         # Filter out scipy internal keys
         valid_keys = [k for k in mat_data.keys() if not k.startswith("__")]
