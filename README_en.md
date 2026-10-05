@@ -2,216 +2,166 @@
 
 [English](README_en.md) | [中文](README.md)
 
-MRI image viewing and processing tool based on Qt and Python, supporting 2D/3D images and k-space data.
+A lightweight MRI data inspector. In a deep-learning data pipeline, use it to quickly open
+`.npy` / `.h5` / `.mat`, confirm shapes and dimension meaning, take a look at the image or
+k-space, and reconstruct with the correct IFFT mode when needed.
 
-## Features
+> It is not a clinical viewer and does no quantitative analysis. It exists to answer
+> "let me just look at this data and make sure it is fine".
 
-### Core Features
-- Intelligent data detection: automatically identifies 2D/3D, user-selectable image/k-space data types
-- **Acquisition mode selection**: Supports 2D acquisition (slice-by-slice 2D IFFT) and 3D acquisition (volume 3D IFFT), defaults to 2D acquisition
-- **3D data interpretation**: When data has 3 dimensions, user can choose to interpret as (Coil,H,W) or (Slice,H,W)
-- k-space conversion: automatically selects 2D/3D IFFT based on acquisition mode
-- Multi-format support: reads .npy and .mat files, saves as .jpg/.png format
-- Multi-view display: 3D data supports Axial, Sagittal, and Coronal views
-- RSS coil combination: automatically combines multi-channel data using Root Sum of Squares
+## What it solves
 
-### Image Enhancement Operations
-- Contrast adjustment: 0.1x - 5.0x range with slider + spinbox control
-- Brightness adjustment: -1.0 - +1.0 range with real-time preview
-- Log transform: specifically for viewing k-space data
-- Rotation: arbitrary angle (-180 to 180 degrees) and quick 90-degree multiples
-- Zoom: 0.1x - 5.0x, supports mouse wheel zoom
-- Flip: horizontal and vertical flip
+While debugging MRI models you keep having to answer:
 
-### 3D Navigation
-- Slider: intuitive slice position selection
-- Button navigation: previous/next/first/last slice quick buttons
-- Keyboard support: arrow keys for quick slice switching
-- Mouse wheel: switch slices in 3D mode
-- Click selection: click on image to select slice
+- Is this data in the **image domain** or in **k-space**?
+- In `(C, S, H, W)`, which axis is coil and which is slice? Is 4D data `(Coil, Slice)` or `(Slice, Coil)`?
+- What does the k-space look like after IFFT? Should it be reconstructed as **2D slice-by-slice** or **3D volumetric** acquisition?
+- Does the multi-coil data look right after RSS combination? Is one slice broken?
 
-## System Requirements
+MRI Reader is built for exactly those "take a look" moments: drop the file in, answer two
+questions, page through slices with the arrow keys.
 
-- OS: Linux (primary), Windows, macOS
-- Python: >= 3.9
-- Package manager: uv (recommended) or pip
-
-## Quick Start
-
-### 1. Install uv (if not installed)
+## Quick start
 
 ```bash
-# Linux/macOS
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# or via pip
-pip install uv
+pip install -e ".[dev]"      # install (includes pytest / ruff / black)
+python -m src.main           # or ./run.sh, or the installed `mri-reader` command
 ```
 
-### 2. Setup Environment
+Dropping a file onto the window also works.
+
+## Supported input
+
+| Format | Notes |
+|--------|-------|
+| `.npy` | a single array, read directly |
+| `.h5` / `.hdf5` | pick a dataset (e.g. `kspace` / `reconstruction_rss` in ISMRMRD-style files) |
+| `.mat` | pick a variable key |
+
+After opening, you confirm three things:
+
+1. **Data type**: `Image` (image domain) or `K-Space` (frequency domain)
+2. **Acquisition mode** (k-space only): `2D` (slice-by-slice 2D IFFT, default) or `3D` (volume 3D IFFT)
+3. **Dimension interpretation**: whether 4D data is `(Coil, Slice, H, W)` or `(Slice, Coil, H, W)`,
+   and whether the first axis of 3D data is coil or slice
+
+Internally everything is normalized to `(C, S, H, W)`:
+
+| Axis | Meaning |
+|------|---------|
+| C | coil channel |
+| S | slice (superior–inferior) |
+| H | rows (anterior–posterior) |
+| W | columns (left–right) |
+
+| Raw shape | Your interpretation | Internal shape | Dimension |
+|---|---|---|---|
+| `(H, W)` | — | `(1, 1, H, W)` | 2D |
+| `(X, H, W)` | `(Coil, H, W)` | `(X, 1, H, W)` | 2D |
+| `(X, H, W)` | `(Slice, H, W)` | `(1, X, H, W)` | 3D |
+| `(C, S, H, W)` | `(Coil, Slice, H, W)` | unchanged | 3D |
+| `(S, C, H, W)` | `(Slice, Coil, H, W)` | transposed to `(C, S, H, W)` | 3D |
+
+Each view fixes one axis (`src/core/views.py` is the single source of truth):
+
+| View | Fixed axis | Plane shape | Index range |
+|---|---|---|---|
+| Axial | S | `(H, W)` | `0 .. S-1` |
+| Sagittal | W | `(S, H)` | `0 .. W-1` |
+| Coronal | H | `(S, W)` | `0 .. H-1` |
+
+## k-space reconstruction
+
+| Acquisition mode | Granularity | IFFT axes |
+|---|---|---|
+| 2D (default) | per `(coil, slice)` | last two `(phase, freq)` |
+| 3D | per `coil` | last three `(slice, phase, freq)` |
+
+The difference is whether the slice direction carries phase encoding: with 2D slice-by-slice
+acquisition it does not participate in the IFFT; with 3D volumetric acquisition it does.
+Magnitude is taken afterwards, and coils are combined with root-sum-of-squares (RSS).
+
+## Interface and controls
+
+```
++------------------+------------------+------------+
+|   K-Space view   |    Image view    | Enhance    |
++------------------+------------------+            |
++-------------------------------------+------------+
+|        Slice / view navigator (bottom)            |
++--------------------------------------------------+
+```
+
+- **Open**: `Ctrl+O`, or drag a file onto the window
+- **Save current image**: `Ctrl+S` (JPG / PNG)
+- **Page slices**: arrow keys, bottom slider, mouse wheel, click on the image
+- **Switch view**: the Axial / Sagittal / Coronal tabs at the bottom
+- **Zoom**: `Ctrl+wheel`, `Ctrl++` / `Ctrl+-` / `Ctrl+0`
+- **Enhance**: right panel; pick `K-Space` or `Image` at the top — the two parameter sets are independent
+  - contrast `0.1x–5.0x`, brightness `-1.0–+1.0`
+  - **Log transform**: almost always on for k-space, otherwise the huge dynamic range hides everything but the bright center
+  - arbitrary-angle rotation, 90° shortcuts, zoom, horizontal/vertical flip
+- **Reset current target**: `Ctrl+R`
+
+## Large files and memory
+
+`.h5` is read lazily: opening a 778 MB k-space dataset does not pull the whole thing into memory.
+
+| Scenario | Peak memory |
+|---|---|
+| Open + axial (default view) inspection | ~280 MB |
+| First switch to sagittal / coronal | one-time volume build: memory rises, takes a few seconds |
+| Subsequent sagittal / coronal switching | instant |
+
+`.npy` / `.mat` are loaded whole by NumPy / SciPy and do not get this optimization.
+
+## Tests and development
 
 ```bash
-# Enter project directory
-cd mri-reader
-
-# Run environment setup script
-./setup.sh
+python -m pytest -q            # full test suite (headless Qt)
+python test_core.py            # legacy core smoke test (kept)
+python verify.py               # legacy end-to-end verification (kept)
+ruff check . && black --check .
 ```
 
-### 3. Run the Program
+Set `QT_QPA_PLATFORM=offscreen` when there is no display. CI lives in `.github/workflows/test.yml`.
 
-```bash
-# Method 1: Use uv directly
-uv run python -m src.main
-
-# Method 2: Quick start script
-./run.sh
-```
-
-### 4. Generate Test Data (Optional)
-
-```bash
-# Generate test data to verify features
-uv run python generate_test_data.py
-```
-
-This will generate test files in the `test_data/` directory, including 2D/3D images and k-space data.
-
-## Usage
-
-### Interface Layout
+## Project layout
 
 ```
-+----------------+----------------+-----------+
-|   K-Space View |    Image View   | Enhance   |
-|    (Left)      |    (Center)     |  (Right)  |
-+----------------+----------------+           |
-+----------------------------------+-----------+
-|        Slice/View Navigator (Bottom)         |
-+----------------------------------------------+
+src/
+├── main.py                  # entry point (QApplication bootstrap)
+├── main_window.py           # main window: layout / menus / signal wiring (thin coordinator)
+├── app/                     # application layer: wires core and ui together
+│   ├── file_loader.py       #   file dialogs and loading (.npy / .h5 / .mat)
+│   ├── display.py           #   view extraction, RSS, rendering, display cache
+│   ├── enhancement.py       #   the two processors and parameter sync
+│   └── lazy.py              #   lazy read-only proxy for large HDF5
+├── core/                    # pure computation, no Qt dependency
+│   ├── views.py             #   ★ single source of truth for view/index semantics
+│   ├── mri_data.py          #   loading, shape normalization, lazy reads
+│   ├── kspace_converter.py  #   2D / 3D IFFT
+│   └── image_processor.py   #   contrast / brightness / log / rotate / zoom / flip
+└── ui/                      # pure widget layer
+    ├── image_canvas.py      #   image canvas
+    ├── enhancement_panel.py #   enhancement panel
+    └── slice_navigator.py   #   slice / view navigator
 ```
 
-### Open File
-1. Click menu `File` -> `Open` or press `Ctrl+O`
-2. Select `.npy` or `.mat` MRI data file
-3. In the dialog that appears, select:
-   - **Data Type**: K-Space (frequency domain) or Image (image data)
-   - **Acquisition Mode** (K-Space only): 2D Acquisition (slice-by-slice 2D IFFT, default) or 3D Acquisition (volume 3D IFFT)
-   - **3D Data Interpretation** (when data has 3 dimensions): (Coil,H,W) first dimension is coil channels (default), or (Slice,H,W) first dimension is slices
-4. If .mat file, also select the data key
-5. Program processes and displays based on your selection
+Layering rule: `core` does not import Qt (so it is unit-testable without a GUI), `ui` holds no
+numerical logic, and `app` does the assembly.
 
-### Save Image
-1. Click menu `File` -> `Save as JPG` or press `Ctrl+S`
-2. Choose save path and format (JPG/PNG)
-3. Currently displayed image will be saved
+## Tech stack
 
-### Enhancement Operations
-1. Select enhancement target at top of right panel: K-Space or Image
-2. Adjust parameters (each target's parameters saved independently):
-   - Drag sliders or input values to adjust contrast/brightness
-   - Check Log transform to view k-space
-   - Set rotation angle or use quick buttons
-3. Click "Reset All" to restore current target's default settings
+PyQt5, NumPy, SciPy (`ndimage` rotation/zoom, `.mat` reading), h5py, Pillow.
 
-### 3D Data Navigation
-- Use bottom slider to select slice
-- Click tabs to switch views (Axial/Sagittal/Coronal)
-- Use arrow keys to quickly browse slices
-- Mouse wheel to switch slices (hold Ctrl to zoom)
+## Known limitations
 
-## Keyboard Shortcuts
-
-| Shortcut | Function |
-|----------|----------|
-| Ctrl+O | Open file |
-| Ctrl+S | Save image |
-| Ctrl+R | Reset current target settings |
-| Ctrl+0 | Fit to window |
-| Ctrl++ | Zoom in |
-| Ctrl+- | Zoom out |
-| Arrow Keys | Switch slice (3D mode) |
-| Ctrl+Mouse Wheel | Zoom image |
-
-## Project Structure
-
-```
-mri-reader/
-├── pyproject.toml              # Project config and dependencies
-├── setup.sh                    # Environment setup script
-├── run.sh                      # Quick start script
-├── generate_test_data.py       # Test data generator
-├── README.md                   # Chinese documentation
-├── README_en.md                # English documentation
-├── src/
-│   ├── main.py                 # Entry point
-│   ├── main_window.py          # Main window
-│   ├── core/
-│   │   ├── mri_data.py         # MRI data model and auto-detection
-│   │   ├── kspace_converter.py # k-space FFT conversion
-│   │   └── image_processor.py  # Image enhancement processing
-│   └── ui/
-│       ├── image_canvas.py     # Image display canvas
-│       ├── enhancement_panel.py # Enhancement operation panel
-│       └── slice_navigator.py  # Slice navigator
-└── test_data/                  # Test data directory (git ignored)
-```
-
-## Data Format Specification
-
-### Supported Input Formats
-
-Supports the following file formats:
-
-- **NumPy (.npy)**: Direct reading of .npy files
-- **MAT (.mat)**: Reading MATLAB .mat files with multi-key selection
-
-### Loading Process
-
-1. Select .npy or .mat file
-2. Select data type: K-Space (frequency domain) / Image (image data)
-3. Select acquisition mode (K-Space only):
-   - **2D Acquisition**: Slice-by-slice independent acquisition, 2D IFFT per slice (default)
-   - **3D Acquisition**: Volume acquisition, 3D IFFT across all spatial dimensions
-4. Select 3D data interpretation (when raw data has 3 dimensions):
-   - **(Coil, H, W)**: First dimension is coil channels (default)
-   - **(Slice, H, W)**: First dimension is slice count
-5. If .mat file, select data key
-6. Process and display
-
-### K-Space Conversion
-
-| Acquisition Mode | Data Shape | IFFT Method |
-|-----------------|-----------|-------------|
-| 2D Acquisition | (Coil/Slice, Phase, Freq) | **2D IFFT**(Phase, Freq) for each (coil, slice) |
-| 2D Acquisition | (Coil, Slice, Phase, Freq) | **2D IFFT**(Phase, Freq) for each (coil, slice) |
-| 3D Acquisition | (Coil, Slice, Phase, Freq) | **3D IFFT**(Slice, Phase, Freq) for each coil |
-
-**Key Difference**:
-- **2D Acquisition**: Each slice is independently excited, k-space has no encoding in slice direction, slice dimension does not participate in IFFT
-- **3D Acquisition**: Slice direction also has phase encoding, FFT is needed in that direction too
-
-## Tech Stack
-
-- GUI Framework: PyQt5 - mature cross-platform GUI library
-- Numerical Computing: NumPy - array operations and math
-- Scientific Computing: SciPy - image rotation and scaling
-- Image Processing: Pillow - image saving support
-
-## Development Guide
-
-### Add New Dependencies
-
-```bash
-uv pip install package_name
-# and update pyproject.toml
-```
-
-### Extend Features
-
-1. Add new image enhancement: add method to `ImageProcessor` class
-2. Add new UI components: create components in corresponding `ui/` module
-3. Support new data formats: extend `MRIData` class detection method
+- View semantics are fixed: axial fixes S, sagittal fixes W, coronal fixes H. No arbitrary oblique reformatting.
+- Automatic k-space detection is a heuristic; the GUI selection always wins.
+- HDF5: a single dataset is used; the ISMRMRD header is not parsed.
+- `.npy` / `.mat` do not benefit from lazy loading.
+- No quantitative analysis, no registration, no DICOM writing.
 
 ## License
 

@@ -80,6 +80,11 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# Agent/tooling scratch: baselines, gates, rendered PNGs
+.artifacts/
+.ruff_cache/
+.deepseek/
+
 # AI agent
 CLAUDE.md
 QWEN.md

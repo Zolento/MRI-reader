@@ -12,8 +12,8 @@ Supports both 2D and 3D acquisition modes
 """
 
 import numpy as np
-from typing import Optional
-from .mri_data import MRIData, DataType
+
+from .mri_data import DataType, MRIData
 
 
 class KSpaceConverter:
@@ -38,7 +38,7 @@ class KSpaceConverter:
         Only operates on the last two dimensions (phase, frequency).
         """
         data = np.fft.ifftshift(data, axes=[-2, -1])
-        data = np.fft.ifftn(data, axes=[-2, -1], norm='ortho')
+        data = np.fft.ifftn(data, axes=[-2, -1], norm="ortho")
         data = np.fft.fftshift(data, axes=[-2, -1])
         return data
 
@@ -54,7 +54,7 @@ class KSpaceConverter:
         3. fftshift to move image center to center
         """
         data = np.fft.ifftshift(data, axes=[-3, -2, -1])
-        data = np.fft.ifftn(data, axes=[-3, -2, -1], norm='ortho')
+        data = np.fft.ifftn(data, axes=[-3, -2, -1], norm="ortho")
         data = np.fft.fftshift(data, axes=[-3, -2, -1])
         return data
 
@@ -76,7 +76,7 @@ class KSpaceConverter:
 
         # Auto-detect mode if not specified
         if mode_3d is None:
-            mode_3d = (mri_data.acquisition_mode == "3d")
+            mode_3d = mri_data.acquisition_mode == "3d"
 
         if mode_3d:
             return KSpaceConverter._convert_3d_acquired(mri_data)
@@ -129,19 +129,42 @@ class KSpaceConverter:
         return converted
 
     @staticmethod
+    def convert_slice(mri_data: MRIData, ch: int, sl: int) -> np.ndarray:
+        """
+        Convert a single ``(channel, slice)`` plane of 2D-acquired k-space.
+
+        Performs the same per-slice 2D IFFT + magnitude used by
+        :meth:`_convert_2d_acquired`, so the result is element-wise identical to
+        ``convert(mri_data, mode_3d=False)[ch, sl]``.  The plane is fetched via
+        :meth:`MRIData.get_slice`, which for a lazily opened HDF5 file reads only
+        that slice from disk -- this is the bounded-memory path used when
+        displaying a single slice.
+
+        Only valid for 2D acquisition; a 3D-acquired volume mixes slices across
+        the IFFT and must use :meth:`convert` with ``mode_3d=True``.
+
+        Args:
+            mri_data: MRIData object containing k-space data.
+            ch: Coil channel index.
+            sl: Slice index (``S`` axis).
+
+        Returns:
+            2D ``float64`` magnitude image of shape ``(H, W)``.
+        """
+        if mri_data.data_type != DataType.KSPACE:
+            raise ValueError("Data is not k-space type")
+
+        # Reuse the shape-normalized plane accessor: it is (C,S,H,W)-aware and
+        # lazy for HDF5-backed data.
+        kspace_slice = mri_data.get_slice(int(sl), int(ch))
+        return np.abs(KSpaceConverter.ifft_2d(kspace_slice))
+
+    @staticmethod
     def convert_slice_by_slice(mri_data: MRIData) -> np.ndarray:
         """
         Alternative conversion method: always process slice by slice
         Useful for debugging or when 3D IFFT produces artifacts
+
+        Identical to the 2D-acquisition path, so it simply delegates to it.
         """
-        converted = np.zeros_like(mri_data.processed_data, dtype=np.float64)
-
-        for ch in range(mri_data.num_channels):
-            for sl in range(mri_data.num_slices):
-                kspace_slice = mri_data.processed_data[ch, sl]
-
-                # Apply 2D IFFT
-                image_slice = KSpaceConverter.ifft_2d(kspace_slice)
-                converted[ch, sl] = np.abs(image_slice)
-
-        return converted
+        return KSpaceConverter._convert_2d_acquired(mri_data)
